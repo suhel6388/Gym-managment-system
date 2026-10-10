@@ -14,10 +14,14 @@ import { notFound, errorHandler } from "./middleware/errors.js";
 
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || "http://localhost:5173" }));
+const clientOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({ origin: clientOrigins, credentials: true }));
 // Better Auth must run before express.json() so its request body is not consumed.
 app.all("/api/auth/*splat", toNodeHandler(auth));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json());
 
 app.get("/api/v1/health", (req, res) => res.json({ status: "ok" }));
 app.use("/api/v1/auth", authRoutes);

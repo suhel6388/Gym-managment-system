@@ -2,7 +2,7 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { prisma } from "../db.js";
 
-const trustedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
+const trustedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);

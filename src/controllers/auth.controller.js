@@ -27,7 +27,7 @@ export async function setupGym(req, res, next) {
 
     res.status(201).json({
       data: { id: gym.id, name: gym.name, phone: gym.phone },
-      message: "Gym created. You can now use the gym management APIs."
+      message: "Gym created. You can now use the gym management"
     });
   } catch (err) { next(err); }
 }

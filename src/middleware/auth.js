@@ -22,7 +22,7 @@ export function requireGym(req, res, next) {
   if (!req.user?.gymId) {
     return res.status(403).json({
       error: "Gym setup required",
-      message: "Create your gym using POST /api/v1/gyms/setup before accessing gym data."
+      message: "Create your gym using POST /api/v1/auth/setup-gym before accessing gym data."
     });
   }
   next();
