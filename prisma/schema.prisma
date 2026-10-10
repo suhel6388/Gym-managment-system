@@ -1,0 +1,219 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+
+enum Role {
+  OWNER
+  ADMIN
+  RECEPTIONIST
+  ACCOUNTANT
+}
+
+enum Timing {
+  MORNING
+  AFTERNOON
+  EVENING
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  INACTIVE
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  OTHER
+}
+
+model Gym {
+  id        String     @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  createdAt DateTime   @default(now())
+  users     User[]
+  members   Member[]
+  plans     MembershipPlan[]
+  expenses  Expense[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  gymId         String?
+  role          Role      @default(OWNER)
+  gym           Gym?      @relation(fields: [gymId], references: [id], onDelete: SetNull)
+  sessions      Session[]
+  accounts      Account[]
+
+  @@index([gymId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  idToken               String?   @db.Text
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?   @db.Text
+  password              String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String   @db.Text
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model Member {
+  id          String      @id @default(cuid())
+  gymId       String
+  gym         Gym         @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  memberCode  String
+  name        String
+  phone       String
+  joinedAt    DateTime    @default(now())
+  timing      Timing      @default(MORNING)
+  notes       String?     @db.Text
+  archivedAt  DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  memberships Membership[]
+  payments    Payment[]
+
+  @@unique([gymId, memberCode])
+  @@index([gymId, name])
+  @@index([gymId, phone])
+}
+
+model MembershipPlan {
+  id            String       @id @default(cuid())
+  gymId         String
+  gym           Gym          @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  name          String
+  durationMonths Int
+  pricePaise    Int
+  isActive      Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  memberships  Membership[]
+
+  @@unique([gymId, name])
+  @@index([gymId, isActive])
+}
+
+model Membership {
+  id               String           @id @default(cuid())
+  gymId            String
+  memberId         String
+  member           Member           @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  planId           String
+  plan             MembershipPlan  @relation(fields: [planId], references: [id], onDelete: Restrict)
+  startDate        DateTime
+  endDate          DateTime
+  pricePaise       Int
+  discountPaise    Int              @default(0)
+  status           MembershipStatus @default(ACTIVE)
+  frozenAt         DateTime?
+  cancelledAt      DateTime?
+  createdAt        DateTime         @default(now())
+  allocations      PaymentAllocation[]
+
+  @@index([gymId, status, endDate])
+  @@index([memberId, endDate])
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  gymId          String
+  memberId       String
+  member         Member        @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  amount          Float
+  paymentMode    PaymentMode
+  receiptNumber  String
+  reference      String?
+  paymentDate    DateTime
+  paidAt         DateTime      @default(now())
+  status         String        @default("SUCCESS")
+  allocations    PaymentAllocation[]
+
+  @@unique([gymId, receiptNumber])
+  @@index([gymId, paidAt])
+  @@index([memberId, paidAt])
+}
+
+model PaymentAllocation {
+  id           String     @id @default(cuid())
+  paymentId    String
+  payment      Payment    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  amountPaise  Int
+
+  @@unique([paymentId, membershipId])
+  @@index([membershipId])
+}
+
+model Expense {
+  id    Int     @id @default(autoincrement()) 
+  gymId        String
+  gym          Gym         @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  name         String
+  category     String
+  description  String?     @db.Text
+  amountPaise  Int
+  paymentMode  PaymentMode
+  expenseDate  DateTime    @default(now())
+  createdAt    DateTime    @default(now())
+
+  @@index([gymId, expenseDate])
+  @@index([gymId, category])
+}
