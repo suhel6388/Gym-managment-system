@@ -62,7 +62,211 @@ Does not require authentication.
 ```json
 { "status": "ok" }
 ```
+# Add Member API
 
+Creates a new member inside the logged-in user's gym.
+
+> **Note:** The route path below (`POST /api/members`) is an assumption. Change it to match however you mounted the router in your Express app.
+
+---
+
+## Endpoint
+
+```
+POST /api/members
+```
+
+## Authentication
+
+Required. Send the auth token your app already uses (example assumes a Bearer JWT):
+
+```
+Authorization: Bearer <token>
+```
+
+The `gymId` is taken from the authenticated user (`req.user.gymId`). **Do not send `gymId` in the body.**
+
+## Headers
+
+| Header          | Value              |
+| --------------- | ------------------ |
+| `Content-Type`  | `application/json` |
+| `Authorization` | `Bearer <token>`   |
+
+## Request Body
+
+| Field        | Type            | Required | Rules                                         |
+| ------------ | --------------- | -------- | --------------------------------------------- |
+| `memberCode` | string          | Yes      | 1-50 chars, trimmed, unique within the gym    |
+| `name`       | string          | Yes      | 1-100 chars, trimmed                          |
+| `phone`      | string          | Yes      | 7-20 chars, trimmed                           |
+| `joinedAt`   | date string     | No       | ISO date, e.g. `2026-10-13`. Defaults to now  |
+| `timing`     | enum `Timing`   | No       | Must be a value from your `Timing` enum. Defaults to `MORNING` |
+| `notes`      | string or null  | No       | Max 2000 chars                                |
+
+### Example body
+
+```json
+{
+  "memberCode": "GYM-0101",
+  "name": "Rahul Sharma",
+  "phone": "9876543210",
+  "joinedAt": "2026-10-13",
+  "timing": "MORNING",
+  "notes": "Prefers trainer in the morning batch"
+}
+```
+
+Minimal body (only required fields):
+
+```json
+{
+  "memberCode": "GYM-0102",
+  "name": "Aman Verma",
+  "phone": "9123456780"
+}
+```
+
+---
+
+## Examples
+
+### cURL
+
+```bash
+curl -X POST http://localhost:5000/api/members \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "memberCode": "GYM-0101",
+    "name": "Rahul Sharma",
+    "phone": "9876543210",
+    "timing": "MORNING"
+  }'
+```
+
+### fetch (React / Vite / Next.js)
+
+```javascript
+async function addMember(token, member) {
+  const res = await fetch("http://localhost:5000/api/members", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(member)
+  });
+
+  const json = await res.json();
+
+  if (!res.ok) {
+    throw new Error(json.error || "Failed to add member");
+  }
+
+  return json.data;
+}
+
+// usage
+const created = await addMember(token, {
+  memberCode: "GYM-0101",
+  name: "Rahul Sharma",
+  phone: "9876543210"
+});
+```
+
+### axios
+
+```javascript
+import axios from "axios";
+
+const { data } = await axios.post(
+  "http://localhost:5000/api/members",
+  { memberCode: "GYM-0101", name: "Rahul Sharma", phone: "9876543210" },
+  { headers: { Authorization: `Bearer ${token}` } }
+);
+
+console.log(data.data); // created member
+```
+
+---
+
+## Responses
+
+### 201 Created
+
+```json
+{
+  "data": {
+    "id": "cm2abc123xyz",
+    "gymId": "cm1gym456",
+    "memberCode": "GYM-0101",
+    "name": "Rahul Sharma",
+    "phone": "9876543210",
+    "joinedAt": "2026-10-13T00:00:00.000Z",
+    "timing": "MORNING",
+    "notes": null,
+    "archivedAt": null,
+    "createdAt": "2026-10-13T08:15:22.000Z",
+    "updatedAt": "2026-10-13T08:15:22.000Z"
+  }
+}
+```
+
+### 400 Bad Request (validation failed)
+
+Happens when a required field is missing or breaks a rule (e.g. empty `name`, `phone` too short, invalid `timing`).
+
+The exact error shape depends on your global error handler. A zod error typically looks like this if you pass `err.issues` through:
+
+```json
+{
+  "error": "Validation failed",
+  "issues": [
+    { "path": ["phone"], "message": "String must contain at least 7 character(s)" }
+  ]
+}
+```
+
+### 401 Unauthorized
+
+Missing or invalid token (returned by your auth middleware).
+
+### 409 Conflict (duplicate member code)
+
+A member with the same `memberCode` already exists in this gym.
+
+```json
+{
+  "error": "A member with this member code already exists"
+}
+```
+
+Archived members still hold their `memberCode`, so you also get a 409 if you reuse a code from an archived member.
+
+### 500 Internal Server Error
+
+Anything unexpected. Handled by your global error middleware.
+
+---
+
+## Related Endpoints
+
+| Method   | Path               | Purpose                                          |
+| -------- | ------------------ | ------------------------------------------------ |
+| `GET`    | `/api/members`     | List members (`from`, `to`, `search`, `includeArchived` query params) |
+| `PUT`    | `/api/members/:id` | Update a member (partial body allowed)           |
+| `DELETE` | `/api/members/:id` | Archive a member (soft delete)                   |
+
+---
+
+## Quick Checklist
+
+- Send a valid auth token
+- Include `memberCode`, `name`, `phone`
+- Keep `memberCode` unique per gym
+- Do not send `gymId`
+- Read the created member from `response.data`
 ## Membership plans
 
 All plan routes require an authenticated user with a gym.
