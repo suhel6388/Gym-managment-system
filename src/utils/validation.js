@@ -1,4 +1,7 @@
 import { z } from "zod";
+
+import { Timing } from "../../generated/prisma/client"
+
 export const memberInput = z.object({
   memberCode: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(100),
@@ -6,8 +9,7 @@ export const memberInput = z.object({
   joinedAt: z.coerce.date().optional(),
   timing: z.nativeEnum(Timing).optional(),
   notes: z.string().trim().max(2000).nullable().optional()
-});
-
+})
 export const expenseInput = z.object({
   title: z.string().trim().min(1).max(120).optional(),
   category: z.string().trim().min(1).max(80).optional(),
