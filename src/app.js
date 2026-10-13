@@ -1,6 +1,6 @@
 import express from "express";
 import { toNodeHandler } from "better-auth/node";
-import { auth } from "./auth/auth.js";
+import { auth } from "./lib/auth.js";
 import cors from "cors";
 import helmet from "helmet";
 import authRoutes from "./routes/auth.route.js";
@@ -23,7 +23,9 @@ app.use(cors({ origin: clientOrigins, credentials: true }));
 app.all("/api/auth/*splat", toNodeHandler(auth));
 app.use(express.json());
 
-app.get("/api/v1/health", (req, res) => res.json({ status: "ok" }));
+app.get("/api/v1/health", (req, res) => res.json({ status: "ok",
+  message: "Api server is working now start testing",
+ }));
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/members", memberRoutes);
 app.use("/api/v1/plans", planRoutes);

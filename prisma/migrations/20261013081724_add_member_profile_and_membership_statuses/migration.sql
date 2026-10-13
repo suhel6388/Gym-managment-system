@@ -1,0 +1,10 @@
+-- AlterTable
+ALTER TABLE `member` ADD COLUMN `address` TEXT NULL,
+    ADD COLUMN `dateOfBirth` DATETIME(3) NULL,
+    ADD COLUMN `email` VARCHAR(191) NULL,
+    ADD COLUMN `emergencyContact` VARCHAR(191) NULL,
+    ADD COLUMN `emergencyPhone` VARCHAR(191) NULL,
+    ADD COLUMN `gender` VARCHAR(191) NULL;
+
+-- AlterTable
+ALTER TABLE `membership` MODIFY `status` ENUM('ACTIVE', 'EXPIRED', 'INACTIVE', 'FROZEN', 'CANCELLED') NOT NULL DEFAULT 'ACTIVE';

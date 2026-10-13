@@ -31,6 +31,8 @@ enum MembershipStatus {
   ACTIVE
   EXPIRED
   INACTIVE
+  FROZEN
+  CANCELLED
 }
 
 enum PaymentMode {
@@ -116,20 +118,26 @@ model Verification {
 }
 
 model Member {
-  id          String      @id @default(cuid())
-  gymId       String
-  gym         Gym         @relation(fields: [gymId], references: [id], onDelete: Cascade)
-  memberCode  String
-  name        String
-  phone       String
-  joinedAt    DateTime    @default(now())
-  timing      Timing      @default(MORNING)
-  notes       String?     @db.Text
-  archivedAt  DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  memberships Membership[]
-  payments    Payment[]
+  id               String      @id @default(cuid())
+  gymId            String
+  gym              Gym         @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  memberCode       String
+  name             String
+  phone            String
+  email            String?
+  dateOfBirth      DateTime?
+  gender           String?
+  address          String?     @db.Text
+  emergencyContact String?
+  emergencyPhone   String?
+  joinedAt         DateTime    @default(now())
+  timing           Timing      @default(MORNING)
+  notes            String?     @db.Text
+  archivedAt       DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  memberships      Membership[]
+  payments         Payment[]
 
   @@unique([gymId, memberCode])
   @@index([gymId, name])

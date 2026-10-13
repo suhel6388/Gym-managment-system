@@ -1,0 +1,72 @@
+[2m2026-10-13T08:13:20.156Z[0m [31mERROR[0m [1m[Better Auth]:[0m PrismaClientKnownRequestError PrismaClientKnownRequestError: 
+Invalid `prisma.user.findFirst()` invocation:
+
+
+Database error. Code: `45028`. Message: `pool timeout: failed to retrieve a connection from pool after 10007ms
+    (pool connections: active=0 idle=0 limit=5)`
+    at vn.handleRequestError (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:238:13)
+    at vn.handleAndLogRequestError (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:184:12)
+    at vn.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:153:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:1014:24)
+    at async Object.findOne (file:///E:/gym-crm/backend/node_modules/@better-auth/prisma-adapter/dist/index.mjs:231:20)
+    at async Object.findOne (file:///E:/gym-crm/backend/node_modules/@better-auth/core/dist/db/adapter/factory.mjs:578:16)
+    at async Object.findUserByEmail (file:///E:/gym-crm/backend/node_modules/better-auth/dist/db/internal-adapter.mjs:569:19)
+    at async file:///E:/gym-crm/backend/node_modules/better-auth/dist/api/routes/sign-up.mjs:192:18
+    at async file:///E:/gym-crm/backend/node_modules/@better-auth/core/dist/context/transaction.mjs:66:13 {
+  code: 'P2039',
+  meta: {
+    modelName: 'User',
+    driverAdapterError: DriverAdapterError: pool timeout: failed to retrieve a connection from pool after 10007ms
+        (pool connections: active=0 idle=0 limit=5)
+        at PrismaMariaDbAdapter.onError (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:324:11)
+        at PrismaMariaDbAdapter.performIO (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:319:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaMariaDbAdapter.queryRaw (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:284:20)
+        at async <anonymous> (E:\gym-crm\backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:200:28)
+        at async e.run (E:\gym-crm\backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:115:40)
+        at async e.execute (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async yr.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:510:22)
+        at async Object.singleLoader (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:113:26)
+        at async vn.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:150:14) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.10.0'
+}
+# SERVER_ERROR:  PrismaClientKnownRequestError: 
+Invalid `prisma.user.findFirst()` invocation:
+
+
+Database error. Code: `45028`. Message: `pool timeout: failed to retrieve a connection from pool after 10007ms
+    (pool connections: active=0 idle=0 limit=5)`
+    at vn.handleRequestError (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:238:13)
+    at vn.handleAndLogRequestError (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:184:12)
+    at vn.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:153:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:1014:24)
+    at async Object.findOne (file:///E:/gym-crm/backend/node_modules/@better-auth/prisma-adapter/dist/index.mjs:231:20)
+    at async Object.findOne (file:///E:/gym-crm/backend/node_modules/@better-auth/core/dist/db/adapter/factory.mjs:578:16)
+    at async Object.findUserByEmail (file:///E:/gym-crm/backend/node_modules/better-auth/dist/db/internal-adapter.mjs:569:19)
+    at async file:///E:/gym-crm/backend/node_modules/better-auth/dist/api/routes/sign-up.mjs:192:18
+    at async file:///E:/gym-crm/backend/node_modules/@better-auth/core/dist/context/transaction.mjs:66:13 {
+  code: 'P2039',
+  meta: {
+    modelName: 'User',
+    driverAdapterError: DriverAdapterError: pool timeout: failed to retrieve a connection from pool after 10007ms
+        (pool connections: active=0 idle=0 limit=5)
+        at PrismaMariaDbAdapter.onError (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:324:11)
+        at PrismaMariaDbAdapter.performIO (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:319:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaMariaDbAdapter.queryRaw (file:///E:/gym-crm/backend/node_modules/@prisma/adapter-mariadb/dist/index.mjs:284:20)
+        at async <anonymous> (E:\gym-crm\backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:200:28)
+        at async e.run (E:\gym-crm\backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:115:40)
+        at async e.execute (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async yr.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:510:22)
+        at async Object.singleLoader (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:113:26)
+        at async vn.request (E:\gym-crm\backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:150:14) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.10.0'
+}

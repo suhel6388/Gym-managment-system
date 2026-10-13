@@ -1,4 +1,4 @@
-import { auth } from "../auth/auth.js";
+import { auth } from "../lib/auth.js";
 
 export async function authenticate(req, res, next) {
   try {

@@ -17,6 +17,23 @@ function handlePrismaError(err, res, next) {
   return next(err);
 }
 
+/**
+ * Generates a member code that is unique within the gym, e.g. `MEM-0001`.
+ * Falls back to a timestamp-based code if the sequential space is exhausted.
+ */
+async function generateMemberCode(gymId) {
+  const count = await prisma.member.count({ where: { gymId } });
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const code = `MEM-${String(count + 1 + attempt).padStart(4, "0")}`;
+    const exists = await prisma.member.findUnique({
+      where: { gymId_memberCode: { gymId, memberCode: code } },
+      select: { id: true }
+    });
+    if (!exists) return code;
+  }
+  return `MEM-${Date.now().toString(36).toUpperCase()}`;
+}
+
 export async function listMembers(req, res, next) {
   try {
     const from = parseDate(req.query.from);
@@ -40,10 +57,19 @@ export async function listMembers(req, res, next) {
               OR: [
                 { name: { contains: search, mode: "insensitive" } },
                 { phone: { contains: search } },
+                { email: { contains: search, mode: "insensitive" } },
                 { memberCode: { contains: search, mode: "insensitive" } }
               ]
             }
           : {})
+      },
+      include: {
+        // Latest membership drives the plan + status columns in the UI.
+        memberships: {
+          orderBy: { endDate: "desc" },
+          take: 1,
+          include: { plan: true }
+        }
       },
       orderBy: { joinedAt: "desc" },
       take: 500
@@ -55,8 +81,9 @@ export async function listMembers(req, res, next) {
 export async function createMember(req, res, next) {
   try {
     const input = memberInput.parse(req.body);
+    const memberCode = input.memberCode || (await generateMemberCode(req.user.gymId));
     const data = await prisma.member.create({
-      data: { ...input, gymId: req.user.gymId }
+      data: { ...input, memberCode, gymId: req.user.gymId }
     });
     res.status(201).json({ data });
   } catch (err) { handlePrismaError(err, res, next); }
