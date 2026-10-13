@@ -1,4 +1,12 @@
 import { z } from "zod";
+export const memberInput = z.object({
+  memberCode: z.string().trim().min(1).max(50),
+  name: z.string().trim().min(1).max(100),
+  phone: z.string().trim().min(7).max(20),
+  joinedAt: z.coerce.date().optional(),
+  timing: z.nativeEnum(Timing).optional(),
+  notes: z.string().trim().max(2000).nullable().optional()
+});
 
 export const expenseInput = z.object({
   title: z.string().trim().min(1).max(120).optional(),
