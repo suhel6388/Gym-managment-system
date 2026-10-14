@@ -2,7 +2,7 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { Pool } from "pg";
 import {prisma} from "./prisma"
-import { Pool } from "pg";
+
 import dotenv from "dotenv";
 dotenv.config();
 export const auth = betterAuth({
@@ -15,12 +15,12 @@ export const auth = betterAuth({
  socialProviders:{
   google:{
     enabled:true,
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+   clientId: process.env.GOOGLE_CLIENT_ID!,
+   clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
  },
  },
  session:{
-  expiresIn: "7d",
+    expiresIn: 7 * 24 * 60 * 60,
  },
  advanced:{
   cookiePrefix:"gym-crm",
