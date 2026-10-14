@@ -7,6 +7,9 @@ export function errorHandler(err, req, res, next) {
   if (err?.name === "ZodError") {
     return res.status(400).json({ error: "Validation failed", details: err.issues });
   }
+  if (typeof err?.statusCode === "number") {
+    return res.status(err.statusCode).json({ error: err.message });
+  }
   if (err?.code === "P2002") {
     return res.status(409).json({ error: "A record with this value already exists" });
   }

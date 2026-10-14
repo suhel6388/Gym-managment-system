@@ -1,51 +1,65 @@
-
 import type { Response, NextFunction } from "express";
-import {
-  AttendanceMarkingMethod,
-} from "../../generated/prisma/client";
+import { z } from "zod";
+import { AttendanceMarkingMethod } from "../../generated/prisma/client";
 import type { AuthRequest } from "../middleware/requireAuth";
-import { AttendanceService } from "../services/attendence.services";
+import {
+  AttendanceService,
+  HttpError,
+} from "../services/attendence.services";
 
-function fail(
-  res: Response,
-  error: unknown,
-  next: NextFunction
-) {
-  const err = error as Error & { statusCode?: number };
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-  if (err.statusCode) {
-    return res.status(err.statusCode).json({
-      success: false,
-      message: err.message,
-    });
+const notesSchema = z.string().trim().max(500).optional();
+
+const memberIdParam = z.object({
+  memberId: z.string().trim().min(1, "memberId is required"),
+});
+
+const searchQuery = z.object({
+  q: z.string().trim().default(""),
+});
+
+const attendanceDateSchema = z
+  .string()
+  .regex(DATE_RE, "attendanceDate must use YYYY-MM-DD")
+  .transform((value, ctx) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    const valid =
+      !Number.isNaN(date.getTime()) &&
+      date.toISOString().slice(0, 10) === value;
+
+    if (!valid) {
+      ctx.addIssue({
+        code: "custom",
+        message: "attendanceDate must be a valid calendar date",
+      });
+      return z.NEVER;
+    }
+
+    return date;
+  });
+
+const checkInBody = z.object({
+  memberId: z.string().trim().min(1, "Valid memberId is required"),
+  attendanceDate: attendanceDateSchema,
+  notes: notesSchema,
+  markingMethod: z.nativeEnum(AttendanceMarkingMethod).default("MANUAL"),
+});
+
+const checkOutBody = z.object({
+  memberId: z.string().trim().min(1, "Valid memberId is required"),
+  notes: notesSchema,
+});
+
+const historyQuery = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+function requireGymId(req: AuthRequest): string {
+  if (!req.gymId) {
+    throw new HttpError(403, "Authenticated gym is missing");
   }
-
-  next(error);
-}
-
-function validNotes(notes: unknown): notes is string | undefined {
-  return (
-    notes === undefined ||
-    (typeof notes === "string" && notes.length <= 500)
-  );
-}
-
-function parseDate(value: unknown): Date | null {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(value)
-  ) return null;
-
-  const date = new Date(`${value}T00:00:00.000Z`);
-
-  return !Number.isNaN(date.getTime()) &&
-    date.toISOString().slice(0, 10) === value
-    ? date
-    : null;
-}
-
-function gymId(req: AuthRequest): string {
-  if (!req.gymId) throw new Error("Authenticated gym is missing");
   return req.gymId;
 }
 
@@ -53,178 +67,106 @@ export class AttendanceController {
   static async searchMembers(
     req: AuthRequest,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
   ) {
     try {
-      const q = String(req.query.q ?? "").trim();
+      const { q } = searchQuery.parse(req.query);
 
       if (q.length < 2) {
-        return res.json({ success: true, data: [] });
+        return res.json({ data: [] });
       }
 
-      const data = await AttendanceService.searchMembers(gymId(req), q);
+      const data = await AttendanceService.searchMembers(requireGymId(req), q);
 
-      return res.json({
-        success: true,
-        data: data.map((member) => ({
-          ...member,
-          memberId: member.id,
-        })),
-      });
+      return res.json({ data });
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 
-  static async checkIn(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction
-  ) {
+  static async checkIn(req: AuthRequest, res: Response, next: NextFunction) {
     try {
-      const { memberId, attendanceDate, notes, markingMethod } =
-        req.body ?? {};
-
-      if (
-        typeof memberId !== "string" ||
-        !memberId.trim() ||
-        !validNotes(notes)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Valid memberId and notes are required",
-        });
-      }
-
-      const date = parseDate(attendanceDate);
-
-      if (!date) {
-        return res.status(400).json({
-          success: false,
-          message: "attendanceDate must use YYYY-MM-DD",
-        });
-      }
-
-      const method = markingMethod ?? "MANUAL";
-
-      if (
-        typeof method !== "string" ||
-        !Object.values(AttendanceMarkingMethod).includes(
-          method as AttendanceMarkingMethod
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid marking method",
-        });
-      }
+      const input = checkInBody.parse(req.body ?? {});
 
       const data = await AttendanceService.checkIn({
-        gymId: gymId(req),
-        memberId,
-        attendanceDate: date,
-        notes,
-        markingMethod: method as AttendanceMarkingMethod,
+        gymId: requireGymId(req),
+        ...input,
       });
 
-      return res.status(201).json({
-        success: true,
-        message: "Member checked in successfully",
-        data,
-      });
+      return res
+        .status(201)
+        .json({ data, message: "Member checked in successfully" });
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 
-  static async checkOut(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction
-  ) {
+  static async checkOut(req: AuthRequest, res: Response, next: NextFunction) {
     try {
-      const { memberId, notes } = req.body ?? {};
-
-      if (
-        typeof memberId !== "string" ||
-        !memberId.trim() ||
-        !validNotes(notes)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Valid memberId and notes are required",
-        });
-      }
+      const input = checkOutBody.parse(req.body ?? {});
 
       const data = await AttendanceService.checkOut({
-        gymId: gymId(req),
-        memberId,
-        notes,
+        gymId: requireGymId(req),
+        ...input,
       });
 
-      return res.json({
-        success: true,
-        message: "Member checked out successfully",
-        data,
-      });
+      return res.json({ data, message: "Member checked out successfully" });
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 
   static async getOpenSession(
     req: AuthRequest,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
   ) {
     try {
+      const { memberId } = memberIdParam.parse(req.params);
       const data = await AttendanceService.getOpenSession(
-        gymId(req),
-        String(req.params.memberId)
+        requireGymId(req),
+        memberId,
       );
 
-      return res.json({ success: true, data });
+      return res.json({ data });
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 
   static async getMemberHistory(
     req: AuthRequest,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
   ) {
     try {
-      const page = Math.max(1, Number(req.query.page) || 1);
-      const limit = Math.min(
-        100,
-        Math.max(1, Number(req.query.limit) || 20)
-      );
+      const { memberId } = memberIdParam.parse(req.params);
+      const { page, limit } = historyQuery.parse(req.query);
 
-      const data = await AttendanceService.getMemberHistory(
-        gymId(req),
-        String(req.params.memberId),
+      const result = await AttendanceService.getMemberHistory(
+        requireGymId(req),
+        memberId,
         page,
-        limit
+        limit,
       );
 
-      return res.json({ success: true, ...data });
+      return res.json(result);
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 
   static async getTodaySummary(
     req: AuthRequest,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
   ) {
     try {
-      const data = await AttendanceService.getTodaySummary(gymId(req));
+      const data = await AttendanceService.getTodaySummary(requireGymId(req));
 
-      return res.json({ success: true, data });
+      return res.json({ data });
     } catch (error) {
-      return fail(res, error, next);
+      return next(error);
     }
   }
 }

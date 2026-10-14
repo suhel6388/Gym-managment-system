@@ -1,15 +1,21 @@
+import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
+import { prisma } from "../db.js";
 
 export async function authenticate(req, res, next) {
   try {
-    const session = await auth.api.getSession({ headers: req.headers });
+    const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
     if (!session?.user) {
       return res.status(401).json({ error: "Authentication required" });
     }
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, gymId: true, role: true, email: true },
+    });
     req.user = {
       id: session.user.id,
-      gymId: session.user.gymId || null,
-      role: session.user.role || "OWNER",
+      gymId: user?.gymId || session.user.gymId || null,
+      role: user?.role || session.user.role || "OWNER",
       email: session.user.email
     };
     next();

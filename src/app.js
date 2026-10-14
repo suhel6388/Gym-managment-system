@@ -10,6 +10,7 @@ import membershipRoutes from "./routes/membership.routes.js";
 import paymentRoutes from "./routes/payment.route.js";
 import expenseRoutes from "./routes/expenses.route.js";
 import reportRoutes from "./routes/reports.routes.js";
+import attendanceRoutes from "./routes/attendence.route.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 
 const app = express();
@@ -25,7 +26,7 @@ app.use(cors({
    credentials: true,
 }));
 // Better Auth must run before express.json() so its request body is not consumed.
-app.all("/api/auth/*", toNodeHandler(auth));
+app.use("/api/auth", toNodeHandler(auth));
 app.use(express.json());
 
 app.get("/api/v1/health", (req, res) => res.json({ status: "ok",
@@ -33,6 +34,7 @@ app.get("/api/v1/health", (req, res) => res.json({ status: "ok",
  }));
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/members", memberRoutes);
+app.use("/api/v1/attendence", attendanceRoutes);
 app.use("/api/v1/plans", planRoutes);
 app.use("/api/v1/memberships", membershipRoutes);
 app.use("/api/v1/payments", paymentRoutes);
