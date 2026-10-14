@@ -1,5 +1,4 @@
 
-
 generator client {
   provider             = "prisma-client"
   output               = "../generated/prisma"
@@ -12,10 +11,9 @@ datasource db {
 
 
 enum Role {
-  OWNER
   ADMIN
   RECEPTIONIST
-  ACCOUNTANT
+
 }
 
 enum Timing {
@@ -62,7 +60,7 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   gymId         String?
-  role          Role      @default(OWNER)
+  role          Role      @default(ADMIN)
   gym           Gym?      @relation(fields: [gymId], references: [id], onDelete: SetNull)
   sessions      Session[]
   accounts      Account[]
