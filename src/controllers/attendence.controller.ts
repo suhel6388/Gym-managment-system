@@ -4,7 +4,7 @@ import {
   AttendanceMarkingMethod,
 } from "../../generated/prisma/client";
 import type { AuthRequest } from "../middleware/requireAuth";
-import { AttendanceService } from "../services/attendance.service";
+import { AttendanceService } from "../services/attendence.services";
 
 function fail(
   res: Response,
