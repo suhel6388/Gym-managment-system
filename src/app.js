@@ -14,6 +14,7 @@ import { notFound, errorHandler } from "./middleware/errors.js";
 
 const app = express();
 app.use(helmet());
+app.use(express.static("public"));
 const clientOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
