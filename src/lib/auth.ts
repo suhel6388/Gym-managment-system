@@ -18,6 +18,7 @@ export const auth = betterAuth({
     .filter(Boolean),
   user: {
     additionalFields: {
+      phone: { type: "string", required: false },
       gymId: { type: "string", required: false, input: false },
       role: { type: "string", required: false, input: false, defaultValue: "ADMIN" },
     },

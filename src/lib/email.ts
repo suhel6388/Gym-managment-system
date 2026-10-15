@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
 
 const smtpHost = process.env.SMTP_HOST;
 const smtpPort = Number(process.env.SMTP_PORT) || 587;
@@ -7,7 +8,7 @@ const smtpPass = process.env.SMTP_PASS;
 const fromAddress =
   process.env.SMTP_FROM || smtpUser || "no-reply@gym-crm.local";
 
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 
 if (smtpHost && smtpUser && smtpPass) {
   transporter = nodemailer.createTransport({
@@ -20,7 +21,7 @@ if (smtpHost && smtpUser && smtpPass) {
   console.warn(
     "[email] SMTP_HOST/SMTP_USER/SMTP_PASS not set — OTPs will be logged to the console instead of emailed. " +
       "Set SMTP_* env vars to send real emails."
-  );
+  );``
 }
 
 export async function sendOTPEmail(email: string, otp: string): Promise<void> {

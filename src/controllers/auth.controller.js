@@ -3,9 +3,22 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
 
+const phoneSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/[\s\-()]/g, ""))
+  .pipe(
+    z
+      .string()
+      .min(10, "Mobile number must be 10-15 digits")
+      .max(16, "Mobile number must be 10-15 digits")
+      .regex(/^\+?\d{10,15}$/, "Invalid mobile number")
+  );
+
 const signupSchema = z.object({
   name: z.string().trim().min(2).max(100),
   email: z.string().trim().toLowerCase().email(),
+  phone: phoneSchema,
   password: z.string().min(8).max(128),
 });
 
@@ -93,6 +106,25 @@ function authErrorMessage(err) {
 export async function signup(req, res, next) {
   try {
     const input = signupSchema.parse(req.body);
+
+    // Pre-check: email already registered?
+    const existingEmail = await prisma.user.findUnique({
+      where: { email: input.email },
+      select: { id: true },
+    });
+    if (existingEmail) {
+      return res.status(409).json({ error: "An account with this email already exists" });
+    }
+
+    // Pre-check: mobile number already registered?
+    const existingPhone = await prisma.user.findUnique({
+      where: { phone: input.phone },
+      select: { id: true },
+    });
+    if (existingPhone) {
+      return res.status(409).json({ error: "An account with this mobile number already exists" });
+    }
+
     const response = await auth.api.signUpEmail({
       body: { ...input, rememberMe: true },
       headers: fromNodeHeaders(req.headers),
@@ -101,6 +133,11 @@ export async function signup(req, res, next) {
     // Better Auth returns 422 when the email is taken — surface it as 409.
     if (response.status === 422) {
       forwardCookies(response, res);
+      const body = await response.clone().json().catch(() => null);
+      const msg = JSON.stringify(body ?? "").toLowerCase();
+      if (msg.includes("phone")) {
+        return res.status(409).json({ error: "An account with this mobile number already exists" });
+      }
       return res.status(409).json({ error: "An account with this email already exists" });
     }
     if (response.status >= 400) {
@@ -113,6 +150,19 @@ export async function signup(req, res, next) {
       user: body?.user ?? null,
     });
   } catch (err) {
+    // Bad input — return 400 with the first validation message, no stack spam.
+    if (err?.name === "ZodError") {
+      const first = err?.issues?.[0];
+      return res.status(400).json({ error: first?.message ?? "Validation failed" });
+    }
+    // Race: two signups at once hit the DB unique constraint.
+    if (err?.code === "P2002") {
+      const target = JSON.stringify(err?.meta?.target ?? "").toLowerCase();
+      if (target.includes("phone")) {
+        return res.status(409).json({ error: "An account with this mobile number already exists" });
+      }
+      return res.status(409).json({ error: "An account with this email already exists" });
+    }
     if (err?.statusCode ?? err?.status) {
       return res.status(authErrorStatus(err)).json({ error: authErrorMessage(err) });
     }
@@ -254,7 +304,7 @@ export async function me(req, res, next) {
     }
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { id: true, name: true, email: true, gymId: true, role: true },
+      select: { id: true, name: true, email: true, phone: true, gymId: true, role: true },
     });
     return res.json({ data: { user: user ?? session.user, session: session.session ?? null } });
   } catch (err) {
