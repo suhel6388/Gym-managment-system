@@ -29,6 +29,8 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [Today's summary](#todays-summary)
   - [Attendance errors](#attendance-errors)
 - [Expenses](#expenses)
+- [Staff and receptionists](#staff-and-receptionists)
+- [Role permissions](#role-permissions)
 - [Dashboard and reports](#dashboard-and-reports)
   - [`GET /api/v1/reports/dashboard`](#get-apiv1reportsdashboard)
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
@@ -728,6 +730,114 @@ The current request validator accepts these fields:
 ```
 
 `amountPaise` is required and must be a non-negative integer; other fields are optional. `PATCH` accepts a partial body. Successful list/create/update responses use `{ "data": ... }`; create returns `201`; delete returns `{ "message": "Expense deleted" }`.
+
+## Staff and receptionists
+
+A gym `ADMIN` can create login accounts for reception staff. Receptionists belong to the same gym and can sign in with the normal login endpoint.
+
+| Method | Path | Who | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/staff/receptionists` | `ADMIN` only | Create a receptionist login |
+| `GET` | `/api/v1/staff/receptionists` | `ADMIN` only | List staff in your gym |
+| `DELETE` | `/api/v1/staff/receptionists/:id` | `ADMIN` only | Remove a receptionist |
+
+All three routes need an authenticated session with a gym (`credentials: "include"`). A `RECEPTIONIST` calling them gets `403`.
+
+### `POST /api/v1/staff/receptionists`
+
+Create the account, then the receptionist logs in with `POST /api/v1/auth/login` like anyone else. No OTP step — the account is ready immediately.
+
+```json
+{
+  "name": "Front Desk",
+  "email": "desk@example.com",
+  "password": "password123",
+  "phone": "9876543210"
+}
+```
+
+- `name` 2–100 chars, valid `email`, `password` 8–128 chars, `phone` optional (10–16 digits).
+- Success (`201`):
+
+```json
+{
+  "message": "Receptionist account created. They can now log in.",
+  "data": {
+    "id": "user-id",
+    "name": "Front Desk",
+    "email": "desk@example.com",
+    "phone": "9876543210",
+    "role": "RECEPTIONIST",
+    "gymId": "gym-id",
+    "createdAt": "2026-10-16T00:00:00.000Z"
+  }
+}
+```
+
+- Duplicate email/phone returns `409`.
+- Non-admin callers get `403`.
+
+```bash
+# 1. Admin creates the receptionist (admin cookies)
+curl -X POST http://localhost:5000/api/v1/staff/receptionists \
+  -H "Content-Type: application/json" \
+  -b admin-cookies.txt \
+  -d '{"name":"Front Desk","email":"desk@example.com","password":"password123"}'
+
+# 2. Receptionist logs in (own cookie jar)
+curl -X POST http://localhost:5000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -c desk-cookies.txt \
+  -d '{"email":"desk@example.com","password":"password123"}'
+
+# 3. Receptionist daily work: allowed (GET + POST)
+curl http://localhost:5000/api/v1/members -b desk-cookies.txt
+curl -X POST http://localhost:5000/api/v1/attendence/check-in \
+  -H "Content-Type: application/json" \
+  -b desk-cookies.txt \
+  -d '{"memberId":"member-id","attendanceDate":"2026-10-16"}'
+
+# 4. Blocked for receptionists (403)
+curl -X PATCH http://localhost:5000/api/v1/members/some-id \
+  -H "Content-Type: application/json" \
+  -b desk-cookies.txt \
+  -d '{"phone":"9999999999"}'
+```
+
+```js
+// Admin creates a receptionist
+const res = await fetch(`${API_BASE}/staff/receptionists`, {
+  method: "POST",
+  credentials: "include", // admin session
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Front Desk", email: "desk@example.com", password: "password123" })
+});
+const { data } = await res.json(); // data.role === "RECEPTIONIST"
+```
+
+### `GET /api/v1/staff/receptionists`
+
+Returns `{ "data": [...] }` with `{ id, name, email, phone, role, gymId, createdAt }` per staff member, newest first.
+
+### `DELETE /api/v1/staff/receptionists/:id`
+
+Removes a `RECEPTIONIST`. Returns `{ "message": "Receptionist removed" }`. Admins cannot delete themselves or other admins (`400`/`403`); unknown ids return `404`.
+
+## Role permissions
+
+| Capability | `ADMIN` | `RECEPTIONIST` |
+|---|---|---|
+| `GET` any gym data (members, plans, attendance, payments, expenses, reports) | Yes | Yes |
+| `POST` (add member, check-in/out, create payment, membership, expense, plan) | Yes | Yes |
+| `PATCH` / `PUT` (edit any record) | Yes | No — `403` |
+| `DELETE` (archive member, deactivate plan, delete expense, remove receptionist) | Yes | No — `403` |
+| Manage staff (`/api/v1/staff/*`) | Yes | No — `403` |
+
+The rule lives in one place — `allowReadAndCreateOnly` in `src/middleware/auth.js` — and is applied to the member, plan, membership, payment, expense, and report routers. Enforcement is by HTTP method, so any future `PATCH`/`DELETE` added to those routers is blocked automatically.
+
+```json
+{ "error": "Receptionists can only view (GET) and add (POST) data" }
+```
 
 ## Dashboard and reports
 

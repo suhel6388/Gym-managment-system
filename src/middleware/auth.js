@@ -15,7 +15,7 @@ export async function authenticate(req, res, next) {
     req.user = {
       id: session.user.id,
       gymId: user?.gymId || session.user.gymId || null,
-      role: user?.role || session.user.role || "OWNER",
+      role: user?.role || session.user.role || "ADMIN",
       email: session.user.email
     };
     next();
@@ -41,4 +41,16 @@ export function allowRoles(...roles) {
     }
     next();
   };
+}
+
+// RECEPTIONIST rule: can only read (GET) and create (POST).
+// Any PUT / PATCH / DELETE from a RECEPTIONIST is rejected here,
+// so individual controllers don't need role checks.
+export function allowReadAndCreateOnly(req, res, next) {
+  if (req.user?.role === "RECEPTIONIST" && req.method !== "GET" && req.method !== "POST") {
+    return res.status(403).json({
+      error: "Receptionists can only view (GET) and add (POST) data",
+    });
+  }
+  next();
 }

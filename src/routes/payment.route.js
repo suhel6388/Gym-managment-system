@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { createPayment, listPayments } from "../controllers/payment.controller.js";
-import { authenticate, requireGym } from "../middleware/auth.js";
+import { authenticate, requireGym, allowReadAndCreateOnly } from "../middleware/auth.js";
 
 const router = Router();
-router.use(authenticate, requireGym);
+router.use(authenticate, requireGym, allowReadAndCreateOnly);
 
 router.get("/", listPayments);
 router.post("/", createPayment);

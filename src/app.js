@@ -11,6 +11,7 @@ import paymentRoutes from "./routes/payment.route.js";
 import expenseRoutes from "./routes/expenses.route.js";
 import reportRoutes from "./routes/reports.routes.js";
 import attendanceRoutes from "./routes/attendence.route.js";
+import staffRoutes from "./routes/staff.route.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 
 const app = express();
@@ -22,7 +23,7 @@ const clientOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5000")
   .filter(Boolean);
 app.use(cors({ 
   origin: clientOrigins, 
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
    credentials: true,
 }));
 // Better Auth must run before express.json() so its request body is not consumed.
@@ -40,6 +41,7 @@ app.use("/api/v1/memberships", membershipRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/reports", reportRoutes);
+app.use("/api/v1/staff", staffRoutes);
 app.use(notFound);
 app.use(errorHandler);
 

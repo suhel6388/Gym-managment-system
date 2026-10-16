@@ -330,7 +330,7 @@ export async function setupGym(req, res, next) {
       });
       await tx.user.update({
         where: { id: req.user.id },
-        data: { gymId: created.id, role: "OWNER" }
+        data: { gymId: created.id, role: "ADMIN" }
       });
       return created;
     });
