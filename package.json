@@ -11,6 +11,7 @@
     "dev": "nodemon --exec tsx server.js",
     "start": "tsx server.js",
     "build": "prisma generate",
+    "prestart": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio"
