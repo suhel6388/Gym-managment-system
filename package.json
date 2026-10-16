@@ -10,6 +10,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --exec tsx server.js",
     "start": "tsx server.js",
+    "build": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio"
@@ -18,7 +19,6 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
     "prisma": "^7.10.0",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "dependencies": {
@@ -33,6 +33,7 @@
     "nodemailer": "^10.1.1",
     "nodemon": "^3.1.14",
     "pg": "^8.23.1",
+    "tsx": "^4.23.15",
     "zod": "^4.6.5"
   }
 }
