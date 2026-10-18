@@ -8,8 +8,8 @@ export async function dashboard(req, res, next) {
     const tomorrow = new Date(todayStart); tomorrow.setDate(tomorrow.getDate()+1);
     const [members, payments, expenses, activeMemberships, expiring] = await Promise.all([
       prisma.member.count({ where: { gymId, archivedAt: null } }),
-      prisma.payment.aggregate({ where: { gymId, status: "SUCCESS", paidAt: { gte: todayStart, lt: tomorrow } }, _sum: { amountPaise: true } }),
-      prisma.expense.aggregate({ where: { gymId, expenseDate: { gte: todayStart, lt: tomorrow } }, _sum: { amountPaise: true } }),
+      prisma.payment.aggregate({ where: { gymId, status: "SUCCESS", paidAt: { gte: todayStart, lt: tomorrow } }, _sum: { amount: true } }),
+      prisma.expense.aggregate({ where: { gymId, expenseDate: { gte: todayStart, lt: tomorrow } }, _sum: { amount: true } }),
       prisma.membership.count({ where: { gymId, status: "ACTIVE", endDate: { gte: now } } }),
       prisma.membership.count({ where: { gymId, status: "ACTIVE", endDate: { gte: now, lte: new Date(now.getTime()+7*86400000) } } })
     ]);
@@ -17,8 +17,8 @@ export async function dashboard(req, res, next) {
       totalMembers: members,
       activeMemberships,
       membershipsExpiringIn7Days: expiring,
-      collectedTodayPaise: payments._sum.amountPaise || 0,
-      expensesTodayPaise: expenses._sum.amountPaise || 0
+      collectedTodayPaise: payments._sum.amount || 0,
+      expensesTodayPaise: expenses._sum.amount || 0
     }});
   } catch (err) { next(err); }
 }

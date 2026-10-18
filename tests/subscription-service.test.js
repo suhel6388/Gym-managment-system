@@ -204,7 +204,7 @@ test("checkout: creates a payment order using the plan's database price", async 
       orderBy: { createdAt: "desc" },
     });
     assert.ok(payment, "A payment order should be created");
-    assert.strictEqual(payment.amountPaise, 139900, "Order amount must match the DB plan price");
+    assert.strictEqual(payment.amount, 139900, "Order amount must match the DB plan price");
   } catch (err) {
     assert.ok(
       err.message.includes("not configured") || err.message.includes("Razorpay"),

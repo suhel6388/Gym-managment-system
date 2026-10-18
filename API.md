@@ -35,6 +35,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [`GET /api/v1/reports/dashboard`](#get-apiv1reportsdashboard)
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
 - [Error responses](#error-responses)
+- [SaaS Subscription & Billing](#saas-subscription--billing)
+- [Subscription API usage guide](#subscription-api-usage-guide)
+- [Subscription Implementation Guide](#subscription-implementation-guide)
 - [Current integration blockers](#current-integration-blockers)
 
 ## Setup and getting started
@@ -1012,7 +1015,7 @@ Response (`201`):
 }
 ```
 
-Errors: `403 TRIALS_DISABLED`, `409 TRIAL_ALREADY_USED`.
+Errors: `400 TRIALS_DISABLED`, `409 TRIAL_ALREADY_USED`.
 
 ---
 
@@ -1220,6 +1223,614 @@ flows remain accessible when expired. A `CANCELLED` subscription scheduled at
 period end retains access until `currentPeriodEnd`.
 
 ---
+
+## Subscription API usage guide
+
+Usage guide for the three subscription route groups mounted in `src/app.js`:
+
+```js
+app.use("/api/v1/subscription", subscriptionRoutes);                  // Group 1 — gym-owner billing APIs
+app.use("/api/v1/subscription/webhooks", subscriptionWebhookRoutes);  // Group 2 — Razorpay webhooks
+app.use("/api/v1/admin/subscription", adminSubscriptionRoutes);       // Group 3 — super-admin APIs
+```
+
+All prices are integer paise (₹499 = `49900`). Authenticated endpoints use the
+Better Auth session cookie — pass `-c cookies.txt -b cookies.txt` to cURL or
+`credentials: "include"` from the browser.
+
+### Usage guide contents
+
+- [Usage conventions](#usage-conventions)
+- [Group 1: gym-owner APIs (/api/v1/subscription)](#group-1-gym-owner-apis-apiv1subscription)
+  - [GET /plans](#get-plans)
+  - [GET /me](#get-me)
+  - [POST /trial](#post-trial)
+  - [POST /checkout](#post-checkout)
+  - [POST /verify](#post-verify)
+  - [GET /history](#get-history)
+  - [POST /cancel](#post-cancel)
+- [Group 2: Razorpay webhooks (/api/v1/subscription/webhooks)](#group-2-razorpay-webhooks-apiv1subscriptionwebhooks)
+  - [POST /razorpay](#post-razorpay)
+  - [Handled webhook events](#handled-webhook-events)
+  - [Webhook response codes](#webhook-response-codes)
+  - [Local webhook testing](#local-webhook-testing)
+- [Group 3: super-admin APIs (/api/v1/admin/subscription)](#group-3-super-admin-apis-apiv1adminsubscription)
+  - [GET /plans (admin)](#get-plans-admin)
+  - [POST /plans (admin)](#post-plans-admin)
+  - [PATCH /plans/:id](#patch-plansid)
+  - [PATCH /plans/:id/status](#patch-plansidstatus)
+  - [GET /gyms](#get-gyms)
+  - [GET /gyms/:gymId](#get-gymsgymid)
+  - [POST /gyms/:gymId/extend-trial](#post-gymsgymidextend-trial)
+  - [POST /gyms/:gymId/grant-access](#post-gymsgymidgrant-access)
+  - [GET /settings](#get-settings)
+  - [PATCH /settings](#patch-settings)
+- [Subscription error code reference](#subscription-error-code-reference)
+- [Subscription end-to-end flow](#subscription-end-to-end-flow)
+
+---
+
+### Usage conventions
+
+#### Authentication and roles
+
+| Route group | Middleware | Who can call |
+|---|---|---|
+| `GET /api/v1/subscription/plans` | none | anyone (public catalog) |
+| Other `/api/v1/subscription/*` | `authenticate` + `requireGym` | gym OWNER / ADMIN / RECEPTIONIST |
+| `/api/v1/subscription/webhooks/razorpay` | HMAC signature only | Razorpay servers (no session) |
+| `/api/v1/admin/subscription/*` | `authenticate` + `requireSuperAdmin` | SUPER_ADMIN only — gym roles get `403 SUPER_ADMIN_REQUIRED` |
+
+`gymId` is always derived from the authenticated session server-side — never
+from the request body — so a caller can never act on another gym. The `role`
+field is not assignable from client input; promote an admin out-of-band with
+`npx tsx scripts/make-super-admin.mjs admin@example.com`.
+
+#### Success and error shape
+
+Successful responses return `{ "data": ... }` (plus `message` where noted and
+`pagination` on list endpoints). Errors return
+`{ "error": "message", "code": "MACHINE_CODE" }` — never a stack trace.
+
+#### 402 Subscription Required
+
+Protected gym-management routers (`members`, `plans`, `memberships`,
+`expenses`, `reports`, `staff`, `attendence`) apply
+`requireActiveSubscription()` and return `402` on every request once the trial
+or paid period ends:
+
+```json
+{
+  "error": "Subscription required",
+  "code": "SUBSCRIPTION_REQUIRED",
+  "reason": "TRIAL_EXPIRED",
+  "expiresAt": "2026-11-01T10:00:00.000Z",
+  "remainingDays": 0,
+  "message": "Your free trial has expired. Please subscribe to continue using gym management features."
+}
+```
+
+`reason` ∈ `TRIAL_EXPIRED` | `SUBSCRIPTION_EXPIRED` | `CANCELLED_IMMEDIATE` |
+`NO_SUBSCRIPTION`. Login, billing, plan listing, history, checkout, verify and
+cancel stay reachable when expired, so a gym can always renew. See
+[Subscription entitlement middleware](#subscription-entitlement-middleware).
+
+#### Rate limits
+
+| Endpoint | Limit |
+|---|---|
+| `POST /api/v1/subscription/trial` | 10 / hour / user |
+| `POST /api/v1/subscription/checkout` | 20 / hour / user |
+| `POST /api/v1/admin/subscription/plans` | 30 / hour / user |
+| `POST .../gyms/:gymId/extend-trial` | 20 / hour / user |
+| `POST .../gyms/:gymId/grant-access` | 20 / hour / user |
+
+---
+
+### Group 1: gym-owner APIs (/api/v1/subscription)
+
+Router: `src/routes/subscription.route.js`. All endpoints below derive the gym
+from the session and return `400 NO_GYM` when the account has no gym yet
+(finish `POST /api/v1/auth/setup-gym` first).
+
+#### GET /plans
+
+Public plan catalog (active plans only, ordered by `displayOrder`).
+
+```bash
+curl http://localhost:5000/api/v1/subscription/plans
+```
+
+Response `200` — see the full shape in
+[`GET /api/v1/subscription/plans`](#get-apiv1subscriptionplans).
+
+#### GET /me
+
+Current gym's subscription plus the computed entitlement — this is how the
+frontend decides whether to show a paywall. Always reachable while
+authenticated.
+
+```bash
+curl http://localhost:5000/api/v1/subscription/me -b cookies.txt
+```
+
+Response `200` (trial active):
+
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "sub_x", "status": "TRIALING", "plan": null,
+      "planNameSnapshot": "Free trial", "pricePaise": 0, "currency": "INR",
+      "trialStartsAt": "2026-10-18T10:00:00.000Z",
+      "trialEndsAt": "2026-11-01T10:00:00.000Z",
+      "remainingTrialDays": 14,
+      "currentPeriodStart": null, "currentPeriodEnd": null,
+      "cancelAtPeriodEnd": false, "cancelledAt": null, "paymentProvider": null
+    },
+    "entitled": true,
+    "expiresAt": "2026-11-01T10:00:00.000Z",
+    "remainingDays": 14,
+    "reason": "TRIAL_ACTIVE"
+  }
+}
+```
+
+- `entitled: true` → paid features are usable.
+- `subscription: null` + `reason: "NO_SUBSCRIPTION"` → start a trial or buy a plan.
+
+#### POST /trial
+
+Start the one-time free trial. Idempotent and transaction-safe — a second call
+returns the existing trial with `alreadyStarted: true`. Rate-limited (10/hour).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/subscription/trial \
+  -H "Content-Type: application/json" -b cookies.txt -c cookies.txt -d '{}'
+```
+
+Response `201` (first call):
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x", "status": "TRIALING",
+    "trialStartsAt": "2026-10-18T10:00:00.000Z",
+    "trialEndsAt": "2026-11-01T10:00:00.000Z",
+    "alreadyStarted": false
+  },
+  "message": "Free trial started"
+}
+```
+
+Errors: `400 TRIALS_DISABLED`, `409 TRIAL_ALREADY_USED`, `400 NO_GYM`.
+`POST /api/v1/auth/setup-gym` also auto-starts the trial (best-effort), so a
+new gym is usually already `TRIALING` — this endpoint is the fallback.
+
+#### POST /checkout
+
+Create a Razorpay order for a plan. The amount is read from the **database
+plan row** — client-supplied prices are ignored. Rate-limited (20/hour).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/subscription/checkout \
+  -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"planId":"plan_x"}'
+```
+
+Response `201`:
+
+```json
+{
+  "data": {
+    "paymentId": "paydb_x", "orderId": "order_xxxx",
+    "amount": 49900, "currency": "INR",
+    "keyId": "rzp_test_xxxx", "status": "CREATED", "reused": false
+  },
+  "message": "Payment order created"
+}
+```
+
+Open Razorpay Checkout in the frontend with `keyId`, `orderId` and the amount
+returned here — no secrets ever reach the client. Retries are idempotent: an
+existing pending order for the same gym+plan comes back with `reused: true`.
+
+Errors: `404 PLAN_NOT_FOUND`, `503 PAYMENT_NOT_CONFIGURED` (Razorpay env vars
+not set — see `.env.example`).
+
+#### POST /verify
+
+Verify the checkout callback signature server-side and activate the
+subscription (transactional, idempotent). Never activate on the browser's
+"success" callback alone.
+
+```bash
+curl -X POST http://localhost:5000/api/v1/subscription/verify \
+  -H "Content-Type: application/json" -b cookies.txt \
+  -d '{"orderId":"order_xxxx","paymentId":"pay_xxxx","signature":"hex_sig"}'
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "sub_x", "status": "ACTIVE",
+      "plan": { "code": "MONTHLY", "name": "Monthly", "pricePaise": 49900 },
+      "pricePaise": 49900, "currency": "INR",
+      "currentPeriodStart": "2026-10-18T10:00:00.000Z",
+      "currentPeriodEnd": "2026-11-18T10:00:00.000Z",
+      "paymentProvider": "razorpay"
+    },
+    "payment": { "id": "paydb_x", "status": "SUCCESS", "verifiedAt": "..." },
+    "alreadyVerified": false
+  },
+  "message": "Subscription activated"
+}
+```
+
+Errors: `400 SIGNATURE_INVALID`, `400 ORDER_MISMATCH`, `400 AMOUNT_MISMATCH`,
+`400 CURRENCY_MISMATCH`, `400 PAYMENT_NOT_CAPTURED`, `404 PAYMENT_NOT_FOUND`.
+A repeat call returns `alreadyVerified: true` with the existing subscription.
+
+#### GET /history
+
+Last 100 payments plus the current subscription snapshot.
+
+```bash
+curl http://localhost:5000/api/v1/subscription/history -b cookies.txt
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "subscription": { "id": "sub_x", "status": "ACTIVE", "pricePaise": 49900, "cancelAtPeriodEnd": false },
+    "payments": [
+      {
+        "id": "paydb_x", "planId": "plan_x", "amountPaise": 49900,
+        "currency": "INR", "status": "SUCCESS", "provider": "razorpay",
+        "orderId": "order_xxxx", "paymentId": "pay_xxxx",
+        "failureReason": null, "verifiedAt": "...", "createdAt": "..."
+      }
+    ]
+  }
+}
+```
+
+`payment.status` ∈ `CREATED | PENDING | SUCCESS | FAILED | REFUNDED | DISPUTED`.
+
+#### POST /cancel
+
+Cancel according to the configured `cancellationPolicy` (default
+`END_OF_PERIOD`: access continues until `currentPeriodEnd`).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/subscription/cancel \
+  -H "Content-Type: application/json" -b cookies.txt -d '{}'
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x", "status": "CANCELLED",
+    "cancelAtPeriodEnd": true,
+    "currentPeriodEnd": "2026-11-18T10:00:00.000Z",
+    "cancelledAt": "2026-10-18T10:00:00.000Z",
+    "alreadyCancelled": false
+  },
+  "message": "Subscription will end at the end of the current billing period"
+}
+```
+
+- `CANCELLED` + `cancelAtPeriodEnd: true` still returns `entitled: true` from
+  `/me` until the period ends.
+- With policy `IMMEDIATE`, `currentPeriodEnd` is set to now and access stops.
+- Errors: `404 SUBSCRIPTION_NOT_FOUND`, `400 SUBSCRIPTION_NOT_ACTIVE`
+  (expired / past-due); repeat calls return `alreadyCancelled: true`.
+
+---
+
+### Group 2: Razorpay webhooks (/api/v1/subscription/webhooks)
+
+Router: `src/routes/subscription.webhook.route.js`.
+
+#### POST /razorpay
+
+```
+POST http://localhost:5000/api/v1/subscription/webhooks/razorpay
+Content-Type: application/json
+X-Razorpay-Signature: <hex hmac>
+```
+
+This router applies `express.raw()` so the **raw body** is preserved for HMAC
+verification against `RAZORPAY_WEBHOOK_SECRET`. No session cookie — the
+signature *is* the authentication. Flow:
+
+1. Verify `X-Razorpay-Signature` over the raw body → `401` if invalid.
+2. Parse the event → `400` if malformed.
+3. Insert `SubscriptionWebhookEvent` by event `id` → duplicate deliveries
+   return `200 { received: true, duplicate: true }` without reprocessing.
+4. Verify the payment **server-side against Razorpay**, then activate the
+   subscription in a transaction.
+5. Mark `processedAt` → `200 { received: true, event, duplicate: false }`.
+
+Activation never happens before signature verification — neither here nor in
+`POST /subscription/verify`.
+
+#### Handled webhook events
+
+| Event | Effect |
+|---|---|
+| `payment.captured`, `payment.authorized` | Server-side verification → activate/extend subscription (idempotent) |
+| `payment.failed` | Pending/created payment rows → `FAILED` with reason |
+| `refund.processed` | Payments → `REFUNDED`; related subscription → `PAST_DUE` |
+| `refund.failed` | Payments → `FAILED` |
+| `charge.disputed` | Payments → `DISPUTED` |
+
+#### Webhook response codes
+
+| Status | Meaning |
+|---|---|
+| 200 | Accepted (processed or duplicate) |
+| 400 | Missing signature/raw body, invalid JSON, malformed event |
+| 401 | Invalid signature |
+| 503 | `WEBHOOK_SECRET_NOT_CONFIGURED` (secret missing from env) |
+
+#### Local webhook testing
+
+```bash
+BODY='{"id":"evt_test_1","event":"payment.captured","payload":{"payment":{"entity":{"id":"pay_x","order_id":"order_x"}}},"order":{"entity":{"id":"order_x"}}}'
+SIG=$(node -e "const c=require('crypto');process.stdout.write(c.createHmac('sha256',process.env.RAZORPAY_WEBHOOK_SECRET).update(process.argv[1]).digest('hex'))" "$BODY")
+curl -X POST http://localhost:5000/api/v1/subscription/webhooks/razorpay \
+  -H "Content-Type: application/json" -H "X-Razorpay-Signature: $SIG" \
+  -d "$BODY"
+```
+
+Point the Razorpay dashboard webhook at
+`https://<your-host>/api/v1/subscription/webhooks/razorpay` and copy the
+generated secret into `RAZORPAY_WEBHOOK_SECRET`.
+
+---
+
+### Group 3: super-admin APIs (/api/v1/admin/subscription)
+
+Router: `src/routes/admin.subscription.route.js`. Every route runs
+`authenticate` + `requireSuperAdmin`; every mutation writes a
+`SubscriptionAuditLog` entry. Promote first with
+`npx tsx scripts/make-super-admin.mjs <email>` and use `admin-cookies.txt`
+for all calls below.
+
+#### GET /plans (admin)
+
+All plans **including inactive** ones.
+
+```bash
+curl http://localhost:5000/api/v1/admin/subscription/plans -b admin-cookies.txt
+```
+
+#### POST /plans (admin)
+
+Create a plan (prices in paise). Rate-limited (30/hour).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/admin/subscription/plans \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{
+    "code": "ENTERPRISE",
+    "name": "Enterprise",
+    "pricePaise": 99900,
+    "currency": "INR",
+    "durationMonths": 12,
+    "displayOrder": 5,
+    "features": ["Unlimited staff", "Multi-branch"],
+    "maxStaff": null,
+    "maxBranches": null
+  }'
+```
+
+| Field | Rules |
+|---|---|
+| `code` | 2–40 chars, uppercased, unique |
+| `name` | 2–120 chars |
+| `pricePaise` | integer ≥ 0 |
+| `durationMonths` | integer 1–60 |
+| `currency` | 3 chars, default `INR` |
+| `isActive` | optional bool (default true) |
+| `displayOrder`, `features`, `maxStaff`, `maxBranches` | optional |
+
+Response `201` — `{ "data": <public plan> }`. Existing subscriptions keep
+their **price snapshot**: editing a plan never re-prices active subscribers.
+
+#### PATCH /plans/:id
+
+Partial update with the same field rules (all optional). Deactivating never
+cancels existing subscriptions — it only hides the plan from
+`GET /subscription/plans` and blocks new checkouts (`404 PLAN_NOT_FOUND`).
+Errors: `404 PLAN_NOT_FOUND`.
+
+#### PATCH /plans/:id/status
+
+```bash
+curl -X PATCH http://localhost:5000/api/v1/admin/subscription/plans/plan_x/status \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"isActive":false}'
+```
+
+Response `200` — `{ "data": { "id", "code", "name", "isActive" } }`.
+
+#### GET /gyms
+
+Search gyms by name/email/phone (`q` ≥ 2 chars).
+
+```bash
+curl "http://localhost:5000/api/v1/admin/subscription/gyms?q=downtown&page=1&limit=20" \
+  -b admin-cookies.txt
+```
+
+Response `200`:
+
+```json
+{
+  "data": [{ "id": "gym_x", "name": "Downtown Fitness", "email": "...", "phone": "..." }],
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+#### GET /gyms/:gymId
+
+Full billing detail for one gym: subscription, last 50 payments, and the
+complete trial history (`type`, `startsAt`, `endsAt`, `reason`,
+`grantedById/Role`, `source`).
+
+```bash
+curl http://localhost:5000/api/v1/admin/subscription/gyms/gym_x -b admin-cookies.txt
+```
+
+Errors: `404` when the gym does not exist.
+
+#### POST /gyms/:gymId/extend-trial
+
+Push `trialEndsAt` forward; audited with a mandatory reason.
+Rate-limited (20/hour).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/admin/subscription/gyms/gym_x/extend-trial \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"additionalDays":7,"reason":"Onboarding delay reported by gym owner"}'
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x", "status": "TRIALING",
+    "trialEndsAt": "2026-11-08T10:00:00.000Z", "extendedByDays": 7
+  },
+  "message": "Trial extended by 7 day(s)"
+}
+```
+
+Errors: `400 INVALID_EXTENSION_DAYS` (not 1–365), `400 REASON_REQUIRED`.
+
+#### POST /gyms/:gymId/grant-access
+
+Manual time-boxed entitlement (comp, outage goodwill, …). Creates or updates
+the subscription as `ACTIVE` with `cancelAtPeriodEnd: true` until the given
+expiry — audited as `ACCESS_GRANTED`. Rate-limited (20/hour).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/admin/subscription/gyms/gym_x/grant-access \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"expiresAt":"2026-11-30","reason":"Payment gateway outage goodwill"}'
+```
+
+`expiresAt` accepts an ISO datetime with offset or a plain date, and must be
+in the future — otherwise `400 INVALID_EXPIRY`.
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x", "status": "ACTIVE",
+    "currentPeriodEnd": "2026-11-30T00:00:00.000Z",
+    "expiresAt": "2026-11-30T00:00:00.000Z"
+  },
+  "message": "Manual access granted until 2026-11-30T00:00:00.000Z"
+}
+```
+
+#### GET /settings
+
+Read the singleton subscription settings row.
+
+```bash
+curl http://localhost:5000/api/v1/admin/subscription/settings -b admin-cookies.txt
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "trialEnabled": true,
+    "trialDurationDays": 14,
+    "trialPricePaise": 0,
+    "trialRequiresPaymentMethod": false,
+    "cancellationPolicy": "END_OF_PERIOD",
+    "reminderDaysBefore": 3,
+    "updatedAt": "2026-10-18T10:00:00.000Z"
+  }
+}
+```
+
+#### PATCH /settings
+
+Partial update (all fields optional), audited as `SETTINGS_UPDATED`.
+
+```bash
+curl -X PATCH http://localhost:5000/api/v1/admin/subscription/settings \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"trialDurationDays":30,"cancellationPolicy":"IMMEDIATE"}'
+```
+
+| Field | Rules |
+|---|---|
+| `trialEnabled` | boolean |
+| `trialDurationDays` | integer 1–365 (`400 INVALID_TRIAL_DURATION`) |
+| `trialPricePaise` | integer ≥ 0 (paid-trial extension point) |
+| `trialRequiresPaymentMethod` | boolean |
+| `cancellationPolicy` | `END_OF_PERIOD` \| `IMMEDIATE` (`400 INVALID_CANCELLATION_POLICY`) |
+| `reminderDaysBefore` | integer ≥ 0 |
+
+---
+
+### Subscription error code reference
+
+| Status | Code | Where |
+|---|---|---|
+| 400 | `NO_GYM` | Any owner endpoint when the account has no gym |
+| 400 | `TRIALS_DISABLED`, `INVALID_EXTENSION_DAYS`, `REASON_REQUIRED`, `INVALID_EXPIRY`, `SUBSCRIPTION_NOT_ACTIVE`, `INVALID_TRIAL_DURATION`, `INVALID_CANCELLATION_POLICY` | Trial / cancel / admin validation |
+| 400 | `SIGNATURE_INVALID`, `ORDER_MISMATCH`, `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `PAYMENT_NOT_CAPTURED` | `POST /subscription/verify` |
+| 400 | `INVALID_WEBHOOK`, `INVALID_PAYLOAD`, `MALFORMED_EVENT` | Webhook (missing/broken payload) |
+| 401 | `INVALID_SIGNATURE` | Webhook signature mismatch |
+| 402 | `SUBSCRIPTION_REQUIRED` | Any protected gym route while not entitled |
+| 403 | `SUPER_ADMIN_REQUIRED` | Non-super-admin calling `/admin/subscription/*` |
+| 404 | `PLAN_NOT_FOUND`, `PAYMENT_NOT_FOUND`, `SUBSCRIPTION_NOT_FOUND` | Missing resources |
+| 409 | `TRIAL_ALREADY_USED` | Second trial for the same gym |
+| 503 | `PAYMENT_NOT_CONFIGURED` | Checkout before `RAZORPAY_KEY_ID/SECRET` are set |
+| 503 | `WEBHOOK_SECRET_NOT_CONFIGURED` | Webhook before `RAZORPAY_WEBHOOK_SECRET` is set |
+
+---
+
+### Subscription end-to-end flow
+
+```text
+signup → verify-email → setup-gym (auto-trial)
+   │
+   ├─ GET  /api/v1/subscription/me            → entitled: true (trial)
+   ├─ GET  /api/v1/subscription/plans         → pick a plan
+   ├─ POST /api/v1/subscription/checkout      → { planId } → orderId + keyId
+   │     └─ frontend opens Razorpay Checkout (public key only)
+   ├─ POST /api/v1/subscription/verify        → { orderId, paymentId, signature } → ACTIVE
+   │     └─ Razorpay also POSTs /subscription/webhooks/razorpay (fallback, idempotent)
+   ├─ GET  /api/v1/subscription/history       → payments + subscription
+   └─ POST /api/v1/subscription/cancel        → CANCELLED at period end (access kept)
+        │
+        └─ trial/period ends → protected routes return 402 SUBSCRIPTION_REQUIRED
+              ├─ renew via /checkout + /verify, or
+              └─ SUPER_ADMIN: POST /admin/subscription/gyms/:id/grant-access
+```
+
+Setup checklist: `npm install` → `npx prisma generate` →
+`npx prisma migrate dev` → `npm run seed` → set Razorpay vars from
+`.env.example` → `npm run dev`.
 
 ---
 

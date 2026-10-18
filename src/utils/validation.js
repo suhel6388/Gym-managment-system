@@ -25,7 +25,7 @@ export const memberInput = z.object({
 export const expenseInput = z.object({
   title: z.string().trim().min(1).max(120).optional(),
   category: z.string().trim().min(1).max(80).optional(),
-  amountPaise: z.number().int().min(0),
+  amount: z.number().int().min(0),
   expenseDate: z.coerce.date().optional(),
   notes: z.string().trim().max(500).optional(),
 });

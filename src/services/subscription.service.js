@@ -363,14 +363,14 @@ export async function createCheckout(gymId, planId) {
       status: { in: ["CREATED", "PENDING"] },
     },
     orderBy: { createdAt: "desc" },
-    select: { id: true, orderId: true, amountPaise: true, status: true, createdAt: true },
+    select: { id: true, orderId: true, amount: true, status: true, createdAt: true },
   });
   if (pending && pending.orderId) {
     return {
       data: {
         paymentId: pending.id,
         orderId: pending.orderId,
-        amount: pending.amountPaise,
+        amount: pending.amount,
         currency: CURRENCY,
         keyId: getKeyId(),
         status: pending.status,
@@ -392,7 +392,7 @@ export async function createCheckout(gymId, planId) {
     data: {
       gymId,
       planId,
-      amountPaise: plan.pricePaise,
+      amount: plan.pricePaise,
       currency: CURRENCY,
       status: "CREATED",
       provider: PROVIDER,
@@ -461,7 +461,7 @@ export async function verifyPayment(gymId, { orderId, paymentId, signature }) {
   if (providerPayment.order_id !== orderId) {
     throw badRequest("Payment does not match the expected order", "ORDER_MISMATCH");
   }
-  if (providerPayment.amount !== payment.amountPaise) {
+  if (providerPayment.amount !== payment.amount) {
     throw badRequest("Payment amount does not match the order", "AMOUNT_MISMATCH");
   }
   if ((providerPayment.currency || "INR") !== payment.currency) {
@@ -532,7 +532,7 @@ export async function verifyPayment(gymId, { orderId, paymentId, signature }) {
       subscriptionId: sub.id,
       actor: null,
       reason: "Paid subscription activated",
-      details: { orderId, paymentId, plan: plan.name, amountPaise: plan.pricePaise, periodEnd },
+      details: { orderId, paymentId, plan: plan.name, amount: plan.pricePaise, periodEnd },
     });
 
     return [sub, updated];
@@ -596,7 +596,7 @@ export async function verifyAndActivateFromWebhook(orderId, paymentId) {
   if (providerPayment.order_id !== orderId) {
     throw badRequest("Payment does not match the expected order", "ORDER_MISMATCH");
   }
-  if (providerPayment.amount !== payment.amountPaise) {
+  if (providerPayment.amount !== payment.amount) {
     throw badRequest("Payment amount does not match the order", "AMOUNT_MISMATCH");
   }
   if ((providerPayment.currency || "INR") !== payment.currency) {
@@ -667,7 +667,7 @@ export async function verifyAndActivateFromWebhook(orderId, paymentId) {
       subscriptionId: sub.id,
       actor: null,
       reason: "Paid subscription activated via webhook",
-      details: { orderId, paymentId, plan: plan.name, amountPaise: plan.pricePaise, periodEnd },
+      details: { orderId, paymentId, plan: plan.name, amount: plan.pricePaise, periodEnd },
     });
 
     return [sub, updated];
@@ -736,7 +736,7 @@ export async function getHistory(gymId) {
       payments: payments.map((p) => ({
         id: p.id,
         planId: p.planId,
-        amountPaise: p.amountPaise,
+        amount: p.amount,
         currency: p.currency,
         status: p.status,
         provider: p.provider,
@@ -797,7 +797,7 @@ export async function cancelSubscription(gymId, actor) {
       data: {
         gymId,
         planId: sub.planId ?? null,
-        amountPaise: 0,
+        amount: 0,
         currency: sub.currency,
         status: "FAILED",
         provider: PROVIDER,
@@ -999,7 +999,7 @@ export async function getGymSubscriptionAdmin(gymId, actor) {
       payments: (subscription?.payments ?? []).map((p) => ({
         id: p.id,
         planId: p.planId,
-        amountPaise: p.amountPaise,
+        amount: p.amount,
         currency: p.currency,
         status: p.status,
         provider: p.provider,

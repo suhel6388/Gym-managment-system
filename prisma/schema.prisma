@@ -212,7 +212,7 @@ model PaymentAllocation {
   payment      Payment    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   membershipId String
   membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
-  amountPaise  Int
+  amount  Float
 
   @@unique([paymentId, membershipId])
   @@index([membershipId])
@@ -225,8 +225,7 @@ model Expense {
   name         String
   category     String
   description  String?     @db.Text
-  amountPaise  Int
-  paymentMode  PaymentMode
+  amount       Float
   expenseDate  DateTime    @default(now())
   createdAt    DateTime    @default(now())
 
@@ -358,7 +357,7 @@ model SubscriptionPayment {
   subscription   GymSubscription?          @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
   planId         String?
   plan           SubscriptionPlan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
-  amountPaise    Int
+  amount         Float
   currency       String                    @default("INR")
   status         SubscriptionPaymentStatus @default(CREATED)
   provider       String                    @default("razorpay")
