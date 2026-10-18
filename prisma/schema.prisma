@@ -13,7 +13,9 @@ datasource db {
 enum Role {
   ADMIN
   RECEPTIONIST
-
+  // SaaS platform owner. Never assigned from client input — promote a user
+  // with `node scripts/make-super-admin.mjs <email>` only.
+  SUPER_ADMIN
 }
 
 enum Timing {
@@ -49,6 +51,13 @@ model Gym {
   plans     MembershipPlan[]
   expenses  Expense[]
   attendances Attendance[]
+
+  // SaaS subscription (platform billing) — kept separate from the gym's own
+  // MembershipPlan products that gym owners sell to their customers.
+  subscription       GymSubscription?
+  trialRecords       TrialRecord[]
+  subscriptionAuditLogs SubscriptionAuditLog[]
+  subscriptionPayments  SubscriptionPayment[]
 }
 
 model User {
@@ -253,4 +262,178 @@ model Attendance {
   @@index([gymId, attendanceDate])
   @@index([gymId, memberId, attendanceDate])
   @@index([memberId, checkOutAt])
+}
+
+// ---------------------------------------------------------------------------
+// SaaS subscription & billing (platform-level, NOT the gym's own memberships)
+// ---------------------------------------------------------------------------
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  PAST_DUE
+}
+
+enum SubscriptionPaymentStatus {
+  CREATED
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+  DISPUTED
+}
+
+enum TrialRecordType {
+  INITIAL
+  EXTENSION
+}
+
+/// SaaS plan sold by the platform owner. `code` makes seeding idempotent.
+/// Prices are always stored in integer paise.
+model SubscriptionPlan {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  name           String
+  description    String?  @db.Text
+  pricePaise     Int
+  currency       String   @default("INR")
+  durationMonths Int
+  isActive       Boolean  @default(true)
+  displayOrder   Int      @default(0)
+  features       String[]
+  maxStaff       Int?
+  maxBranches    Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  subscriptions GymSubscription[]
+  payments      SubscriptionPayment[]
+
+  @@index([isActive, displayOrder])
+}
+
+/// One SaaS subscription row per gym. The unique gymId constraint is what
+/// makes concurrent duplicate trial/payment grants impossible: the losing
+/// transaction hits P2002 and rolls back.
+/// Price/name are snapshotted at purchase time so later plan edits by the
+/// SaaS owner never change existing purchase terms.
+model GymSubscription {
+  id                 String             @id @default(cuid())
+  gymId              String             @unique
+  gym                Gym                @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  planId             String?
+  plan               SubscriptionPlan?  @relation(fields: [planId], references: [id], onDelete: SetNull)
+  status             SubscriptionStatus @default(TRIALING)
+  planNameSnapshot   String?
+  pricePaise         Int                @default(0)
+  currency           String             @default("INR")
+  trialStartsAt      DateTime?
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  cancelledAt        DateTime?
+  paymentProvider    String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  payments SubscriptionPayment[]
+
+  @@index([status, currentPeriodEnd])
+  @@index([trialEndsAt])
+}
+
+/// Financial history for SaaS subscription payments. Rows are never deleted.
+/// orderId/paymentId are provider-verified and unique, which makes
+/// verification and webhook processing idempotent.
+model SubscriptionPayment {
+  id             String                    @id @default(cuid())
+  gymId          String
+  gym            Gym                       @relation(fields: [gymId], references: [id], onDelete: Restrict)
+  // Nullable: a payment order can be created before any subscription row
+  // exists (e.g. a gym that never started a trial). Bound on activation.
+  subscriptionId String?
+  subscription   GymSubscription?          @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  planId         String?
+  plan           SubscriptionPlan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
+  amountPaise    Int
+  currency       String                    @default("INR")
+  status         SubscriptionPaymentStatus @default(CREATED)
+  provider       String                    @default("razorpay")
+  orderId        String?                   @unique
+  paymentId      String?                   @unique
+  signature      String?
+  failureReason  String?                   @db.Text
+  verifiedAt     DateTime?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([gymId, createdAt])
+  @@index([subscriptionId, status])
+}
+
+/// Duplicate-webhook protection. The provider event id is the primary key:
+/// re-delivering the same webhook hits a unique violation and is skipped.
+model SubscriptionWebhookEvent {
+  id          String    @id
+  provider    String    @default("razorpay")
+  type        String
+  payload     Json?
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+/// Durable trial history / eligibility record. INITIAL rows prove a gym has
+/// consumed its one allowed trial; EXTENSION rows record audited admin grants.
+model TrialRecord {
+  id            String          @id @default(cuid())
+  gymId         String
+  gym           Gym             @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  type          TrialRecordType
+  startsAt      DateTime
+  endsAt        DateTime
+  reason        String?         @db.Text
+  grantedById   String?
+  grantedByRole String?
+  source        String          @default("SELF_SERVICE")
+  createdAt     DateTime        @default(now())
+
+  @@index([gymId, createdAt])
+  @@index([type, createdAt])
+}
+
+/// Singleton row (id = "singleton") holding platform trial/billing settings.
+model SubscriptionSetting {
+  id                       String    @id @default("singleton")
+  trialEnabled             Boolean   @default(true)
+  trialDurationDays        Int       @default(14)
+  trialPricePaise          Int       @default(0)
+  trialRequiresPaymentMethod Boolean  @default(false)
+  cancellationPolicy       String    @default("END_OF_PERIOD") // END_OF_PERIOD | IMMEDIATE
+  reminderDaysBefore       Int       @default(3)
+  updatedById              String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+}
+
+/// Append-only audit trail for plan changes, settings changes, trial grants,
+/// manual access grants, cancellations and payment status changes.
+model SubscriptionAuditLog {
+  id             String          @id @default(cuid())
+  action         String
+  gymId          String?
+  gym            Gym?            @relation(fields: [gymId], references: [id], onDelete: SetNull)
+  planId         String?
+  subscriptionId String?
+  actorUserId    String?
+  actorEmail     String?
+  actorRole      String?
+  reason         String?         @db.Text
+  details        Json?
+  createdAt      DateTime        @default(now())
+
+  @@index([gymId, createdAt])
+  @@index([action, createdAt])
 }

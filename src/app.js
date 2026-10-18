@@ -12,6 +12,10 @@ import expenseRoutes from "./routes/expenses.route.js";
 import reportRoutes from "./routes/reports.routes.js";
 import attendanceRoutes from "./routes/attendence.route.js";
 import staffRoutes from "./routes/staff.route.js";
+import subscriptionRoutes from "./routes/subscription.route.js";
+import adminSubscriptionRoutes from "./routes/admin.subscription.route.js";
+import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
+import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 
 const app = express();
@@ -42,6 +46,18 @@ app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/reports", reportRoutes);
 app.use("/api/v1/staff", staffRoutes);
+
+// SaaS subscription & billing routes.
+app.use("/api/v1/subscription", subscriptionRoutes);
+app.use("/api/v1/subscription/webhooks", subscriptionWebhookRoutes);
+app.use("/api/v1/admin/subscription", adminSubscriptionRoutes);
+
+// Start the background expiry/reconciliation job (defense in depth; entitlement
+// is also checked on every request by requireActiveSubscription).
+if (process.env.DISABLE_EXPIRY_JOB !== "true") {
+  startExpiryJob();
+}
+
 app.use(notFound);
 app.use(errorHandler);
 

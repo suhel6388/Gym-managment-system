@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { cancelMembership, createMembership, freezeMembership, listMemberships } from "../controllers/membership.controller.js";
-import { authenticate, requireGym, allowReadAndCreateOnly } from "../middleware/auth.js";
+import {
+  authenticate,
+  requireGym,
+  allowReadAndCreateOnly,
+} from "../middleware/auth.js";
+import { requireActiveSubscription } from "../middleware/subscription.js";
 
 const router = Router();
-router.use(authenticate, requireGym, allowReadAndCreateOnly);
+router.use(authenticate, requireGym, allowReadAndCreateOnly, requireActiveSubscription());
 
 router.get("/", listMemberships);
 router.post("/", createMembership);

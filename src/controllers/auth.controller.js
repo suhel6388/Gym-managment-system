@@ -2,6 +2,7 @@ import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
+import { startTrial } from "../services/subscription.service.js";
 
 const phoneSchema = z
   .string()
@@ -334,6 +335,14 @@ export async function setupGym(req, res, next) {
       });
       return created;
     });
+
+    // Auto-start a free trial for the new gym when trials are enabled.
+    // This is best-effort: a failure here must not break gym creation.
+    try {
+      await startTrial(gym.id, req.user);
+    } catch {
+      // Trial already started or trials disabled — gym can retry via POST /api/v1/subscription/trial.
+    }
 
     res.status(201).json({
       data: { id: gym.id, name: gym.name, phone: gym.phone },

@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { createPlan, deactivatePlan, listPlans, updatePlan } from "../controllers/plans.controller.js";
-import { authenticate, requireGym, allowReadAndCreateOnly } from "../middleware/auth.js";
+import {
+  authenticate,
+  requireGym,
+  allowReadAndCreateOnly,
+} from "../middleware/auth.js";
+import { requireActiveSubscription } from "../middleware/subscription.js";
 
 const router = Router();
-router.use(authenticate, requireGym, allowReadAndCreateOnly);
+router.use(authenticate, requireGym, allowReadAndCreateOnly, requireActiveSubscription());
 
 router.get("/", listPlans);
 router.post("/", createPlan);

@@ -7,14 +7,16 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsx --test tests/",
     "dev": "nodemon --exec tsx server.js",
     "start": "tsx server.js",
     "build": "prisma generate",
     "prestart": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "seed": "tsx prisma/seed.mjs",
+    "make-super-admin": "tsx scripts/make-super-admin.mjs"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -34,6 +36,7 @@
     "nodemailer": "^10.1.1",
     "nodemon": "^3.1.14",
     "pg": "^8.23.1",
+    "razorpay": "^2.9.8",
     "tsx": "^4.23.15",
     "zod": "^4.6.5"
   }

@@ -880,6 +880,601 @@ Validation errors return `400`:
 
 Other common responses include `401` for a missing session, `403` when gym setup or permissions are required, `404` for a missing route/record, and `409` for conflicts. Unhandled server errors return `500`.
 
+## SaaS Subscription & Billing
+
+Platform-level subscription and billing for gyms. These are separate from the
+membership plans that gym owners sell to their own customers.
+
+All prices are stored in integer paise (₹499 = 49900). The gym `gymId` is always
+derived from the authenticated session — never accepted from the request body.
+
+### Base path
+`/api/v1/subscription` (gym-owner) and `/api/v1/admin/subscription` (super-admin).
+
+Authentication: Better Auth session cookie (`credentials: "include"`).
+
+---
+
+### Quick usage guide (bulletin)
+
+- **Gym owner flow**
+  - Sign up → verify email → `POST /api/v1/auth/setup-gym` (auto-starts the 14-day free trial if trials are enabled)
+  - `GET /api/v1/subscription/plans` — list active plans with public features
+  - `GET /api/v1/subscription/me` — view your subscription, plan, status, `trialEndsAt`, `currentPeriodEnd`, and `remainingDays` (calculated server-side)
+  - `POST /api/v1/subscription/trial` — start a free trial (idempotent; one trial per gym)
+  - `POST /api/v1/subscription/checkout` — create a Razorpay order using the plan's database price (never trust client-supplied price)
+  - Pay via Razorpay on the frontend, then `POST /api/v1/subscription/verify` — verifies signature + provider status and activates the subscription
+  - `GET /api/v1/subscription/history` — view subscription and payment history
+  - `POST /api/v1/subscription/cancel` — cancel at end of paid period (access continues until `currentPeriodEnd`)
+- **Super-admin flow** (requires `SUPER_ADMIN` role; promote via `tsx scripts/make-super-admin.mjs <email>`)
+  - `GET /api/v1/admin/subscription/plans` — list all plans including inactive
+  - `POST /api/v1/admin/subscription/plans` — create a plan
+  - `PATCH /api/v1/admin/subscription/plans/:id` — update a plan
+  - `PATCH /api/v1/admin/subscription/plans/:id/status` — activate or deactivate a plan (existing subscriptions keep their snapshotted terms)
+  - `GET /api/v1/admin/subscription/gyms?q=...` — search gyms by name/email/phone
+  - `GET /api/v1/admin/subscription/gyms/:gymId` — view a gym's subscription + payment + trial history
+  - `POST /api/v1/admin/subscription/gyms/:gymId/extend-trial` — extend a trial with reason (audited)
+  - `POST /api/v1/admin/subscription/gyms/:gymId/grant-access` — grant time-limited manual access with reason and expiry (audited)
+  - `GET /api/v1/admin/subscription/settings` — read trial/billing settings
+  - `PATCH /api/v1/admin/subscription/settings` — update trial duration, enabled status, cancellation policy, etc.
+- **Security rules**
+  - `gymId` is always derived from the authenticated session — never accepted from the request body
+  - Only `SUPER_ADMIN` can create/edit/deactivate plans; gym owners cannot change prices or entitlements
+  - Existing subscriptions preserve their original price when a plan price changes
+  - Deactivating a plan does not cancel existing subscriptions
+  - Expired trials/paid subscriptions return `402 SUBSCRIPTION_REQUIRED` on protected gym-management routes
+  - `CANCELLED` with `cancelAtPeriodEnd` keeps access until the period ends
+
+---
+
+### `GET /api/v1/subscription/plans`
+Public. Returns active SaaS plans with their public features.
+
+Response (`200`):
+```json
+{
+  "data": [
+    {
+      "id": "cm...",
+      "code": "MONTHLY",
+      "name": "Monthly",
+      "description": "Full access for one month.",
+      "pricePaise": 49900,
+      "currency": "INR",
+      "durationMonths": 1,
+      "isActive": true,
+      "displayOrder": 1,
+      "features": ["Unlimited members", "Attendance tracking", "Payments & expenses", "Reports dashboard"],
+      "maxStaff": 2,
+      "maxBranches": 1
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/v1/subscription/me`
+Authenticated. Returns the authenticated gym's subscription, plan, status,
+start/expiry dates, and remaining trial days.
+
+Response (`200`):
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "cm...",
+      "status": "TRIALING",
+      "plan": null,
+      "planNameSnapshot": "Free trial",
+      "pricePaise": 0,
+      "currency": "INR",
+      "trialStartsAt": "2026-10-18T10:00:00.000Z",
+      "trialEndsAt": "2026-11-01T10:00:00.000Z",
+      "currentPeriodStart": null,
+      "currentPeriodEnd": null,
+      "cancelAtPeriodEnd": false,
+      "cancelledAt": null,
+      "paymentProvider": null
+    },
+    "entitled": true,
+    "expiresAt": "2026-11-01T10:00:00.000Z",
+    "remainingDays": 14,
+    "reason": "TRIAL_ACTIVE"
+  }
+}
+```
+
+`remainingDays` is the whole-day count until the trial or paid period ends
+(`0` when expired). `expiresAt` is the trial end or period end date.
+
+---
+
+### `POST /api/v1/subscription/trial`
+Authenticated gym owner. Starts a free trial if the gym is eligible and trials
+are enabled. Idempotent — returns the existing trial if already started.
+
+Rate-limited (10 per hour per user).
+
+Request body: `{}`
+
+Response (`201`):
+```json
+{
+  "data": {
+    "subscriptionId": "cm...",
+    "status": "TRIALING",
+    "trialStartsAt": "2026-10-18T10:00:00.000Z",
+    "trialEndsAt": "2026-11-01T10:00:00.000Z",
+    "alreadyStarted": false
+  },
+  "message": "Free trial started"
+}
+```
+
+Errors: `403 TRIALS_DISABLED`, `409 TRIAL_ALREADY_USED`.
+
+---
+
+### `POST /api/v1/subscription/checkout`
+Authenticated gym owner. Creates a Razorpay payment order for a plan using the
+plan's database price (client-supplied prices are ignored).
+
+Rate-limited (20 per hour per user).
+
+Request body:
+```json
+{ "planId": "cm..." }
+```
+
+Response (`201`):
+```json
+{
+  "data": {
+    "paymentId": "cm...",
+    "orderId": "order_...",
+    "amount": 49900,
+    "currency": "INR",
+    "keyId": "rzp_test_...",
+    "status": "CREATED",
+    "reused": false
+  },
+  "message": "Payment order created"
+}
+```
+
+`keyId` is the public Razorpay key id for the frontend checkout. Never send
+the secret key to the frontend.
+
+---
+
+### `POST /api/v1/subscription/verify`
+Authenticated gym owner. Verifies a Razorpay payment (signature + provider
+status) and activates the subscription. Never trusts the browser alone.
+
+Request body:
+```json
+{ "orderId": "order_...", "paymentId": "pay_...", "signature": "..." }
+```
+
+Response (`200`):
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "cm...",
+      "status": "ACTIVE",
+      "plan": { "id": "...", "name": "Monthly", ... },
+      "pricePaise": 49900,
+      "currency": "INR",
+      "currentPeriodStart": "2026-10-18T10:00:00.000Z",
+      "currentPeriodEnd": "2026-11-18T10:00:00.000Z",
+      "paymentProvider": "razorpay"
+    },
+    "payment": { "id": "...", "status": "SUCCESS", "verifiedAt": "..." },
+    "alreadyVerified": false
+  },
+  "message": "Subscription activated"
+}
+```
+
+---
+
+### `GET /api/v1/subscription/history`
+Authenticated gym owner. Returns the gym's subscription and payment history.
+
+Response (`200`):
+```json
+{
+  "data": {
+    "subscription": { ... },
+    "payments": [
+      {
+        "id": "cm...",
+        "planId": "cm...",
+        "amountPaise": 49900,
+        "currency": "INR",
+        "status": "SUCCESS",
+        "provider": "razorpay",
+        "orderId": "order_...",
+        "paymentId": "pay_...",
+        "verifiedAt": "2026-10-18T10:00:00.000Z",
+        "createdAt": "2026-10-18T10:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### `POST /api/v1/subscription/cancel`
+Authenticated gym owner. Cancels according to the configured billing policy
+(default: cancel at end of paid period; access continues until `currentPeriodEnd`).
+
+Response (`200`):
+```json
+{
+  "data": {
+    "subscriptionId": "cm...",
+    "status": "CANCELLED",
+    "cancelAtPeriodEnd": true,
+    "currentPeriodEnd": "2026-11-18T10:00:00.000Z",
+    "cancelledAt": "2026-10-18T10:00:00.000Z",
+    "alreadyCancelled": false
+  },
+  "message": "Subscription will end at the end of the current billing period"
+}
+```
+
+---
+
+### Super-admin: plan management
+All require the `SUPER_ADMIN` role (never assignable from client input;
+promote via `tsx scripts/make-super-admin.mjs <email>`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/subscription/plans` | List all plans (incl. inactive) |
+| `POST` | `/api/v1/admin/subscription/plans` | Create a plan |
+| `PATCH` | `/api/v1/admin/subscription/plans/:id` | Update a plan |
+| `PATCH` | `/api/v1/admin/subscription/plans/:id/status` | Activate/deactivate (`{ "isActive": bool }`) |
+
+Create body:
+```json
+{
+  "code": "MONTHLY",
+  "name": "Monthly",
+  "pricePaise": 49900,
+  "durationMonths": 1,
+  "features": ["Unlimited members"],
+  "maxStaff": 2,
+  "maxBranches": 1,
+  "isActive": true
+}
+```
+
+Deactivating a plan does **not** cancel existing subscriptions (purchase terms
+are snapshotted).
+
+---
+
+### Super-admin: gym subscription management
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/subscription/gyms?q=...&page=1&limit=20` | Search gyms by name/email/phone |
+| `GET` | `/api/v1/admin/subscription/gyms/:gymId` | View a gym's subscription + payment + trial history |
+| `POST` | `/api/v1/admin/subscription/gyms/:gymId/extend-trial` | Extend trial (`{ "additionalDays": 7, "reason": "..." }`) |
+| `POST` | `/api/v1/admin/subscription/gyms/:gymId/grant-access` | Grant time-limited access (`{ "expiresAt": "2026-12-31T00:00:00Z", "reason": "..." }`) |
+
+---
+
+### Super-admin: settings
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/subscription/settings` | Read trial/billing settings |
+| `PATCH` | `/api/v1/admin/subscription/settings` | Update settings |
+
+```json
+{
+  "trialEnabled": true,
+  "trialDurationDays": 14,
+  "trialPricePaise": 0,
+  "trialRequiresPaymentMethod": false,
+  "cancellationPolicy": "END_OF_PERIOD",
+  "reminderDaysBefore": 3
+}
+```
+
+---
+
+### Webhook: Razorpay
+`POST /api/v1/subscription/webhooks/razorpay`
+
+Server-side signature verification using `X-Razorpay-Signature` and the raw
+request body. Events are deduplicated. Handles `payment.captured`,
+`payment.authorized`, `payment.failed`, `refund.processed`,
+`refund.failed`, and `charge.disputed`.
+
+---
+
+### Subscription entitlement middleware
+Protected gym-management routes (`members`, `plans`, `memberships`,
+`attendence`, `expenses`, `reports`, `staff`) check the gym's subscription on
+every request. When a trial or paid subscription expires, they return `402`
+with a `SUBSCRIPTION_REQUIRED` error:
+
+```json
+{
+  "error": "Subscription required",
+  "code": "SUBSCRIPTION_REQUIRED",
+  "reason": "TRIAL_EXPIRED",
+  "expiresAt": "2026-11-01T10:00:00.000Z",
+  "remainingDays": 0,
+  "message": "Your free trial has expired. Please subscribe to continue using gym management features."
+}
+```
+
+Login, account access, billing, plan listing, payment history, and renewal
+flows remain accessible when expired. A `CANCELLED` subscription scheduled at
+period end retains access until `currentPeriodEnd`.
+
+---
+
+---
+
+## Subscription Implementation Guide
+
+This is a step-by-step guide to the complete subscription and billing flow.
+
+### Prerequisites
+
+```bash
+npm install
+npx prisma generate
+npx prisma migrate dev   # subscription migrations already applied
+npm run seed             # idempotent: 4 plans + trial settings
+npm run dev              # server on http://localhost:5000
+```
+
+Seed output:
+```
+Seed complete: 4 SaaS plan(s) in database, subscription settings ready.
+```
+
+| Plan | Price | Duration |
+|------|-------|----------|
+| Monthly | ₹499 (49900 paise) | 1 month |
+| Quarterly | ₹1,399 (139900 paise) | 3 months |
+| Half-yearly | ₹2,799 (279900 paise) | 6 months |
+| Annual | ₹4,699 (469900 paise) | 12 months |
+
+---
+
+### 1. Gym owner: signup → verify → create gym (auto-starts trial)
+
+Using a cookie jar (`cookies.txt`):
+
+```bash
+API=http://localhost:5000/api/v1
+
+# Signup
+curl -X POST $API/auth/signup \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"name":"Aarav Patel","email":"owner@example.com","password":"password123"}'
+
+# Verify email (6-digit OTP from email/console)
+curl -X POST $API/auth/verify-email \
+  -H "Content-Type: application/json" \
+  -c cookies.txt -b cookies.txt \
+  -d '{"email":"owner@example.com","otp":"123456"}'
+
+# Create gym — this also auto-starts the 14-day free trial (if trials enabled)
+curl -X POST $API/auth/setup-gym \
+  -H "Content-Type: application/json" \
+  -c cookies.txt -b cookies.txt \
+  -d '{"name":"Downtown Fitness","phone":"+91 98765 43210","email":"hello@example.com"}'
+```
+
+### 2. Gym owner: check subscription & remaining trial days
+
+```bash
+curl $API/subscription/me -b cookies.txt
+```
+
+Response (200) — trial active:
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "sub_xyz",
+      "status": "TRIALING",
+      "planNameSnapshot": "Free trial",
+      "pricePaise": 0,
+      "currency": "INR",
+      "trialStartsAt": "2026-10-18T10:00:00.000Z",
+      "trialEndsAt": "2026-11-01T10:00:00.000Z",
+      "currentPeriodStart": null,
+      "currentPeriodEnd": null,
+      "cancelAtPeriodEnd": false,
+      "cancelledAt": null,
+      "paymentProvider": null
+    },
+    "entitled": true,
+    "expiresAt": "2026-11-01T10:00:00.000Z",
+    "remainingDays": 14,
+    "reason": "TRIAL_ACTIVE"
+  }
+}
+```
+
+- `remainingDays` = whole days until expiry (calculated server-side, `0` when expired).
+- When `entitled` is `false`, protected gym routes (members, plans, attendance, expenses, reports, staff) return `402 SUBSCRIPTION_REQUIRED`.
+
+---
+
+### 3. Gym owner: list plans, checkout, pay, verify
+
+```bash
+# List active plans
+curl $API/subscription/plans -b cookies.txt
+
+# Create a Razorpay order (replace PLAN_ID)
+curl -X POST $API/subscription/checkout \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"planId":"PLAN_ID"}'
+```
+
+Response (201):
+```json
+{
+  "data": {
+    "paymentId": "payord_abc",
+    "orderId": "order_rAz123",
+    "amount": 49900,
+    "currency": "INR",
+    "keyId": "rzp_test_...",
+    "status": "CREATED",
+    "reused": false
+  },
+  "message": "Payment order created"
+}
+```
+
+- `keyId` is the **public** Razorpay key for frontend checkout. Never send `RAZORPAY_KEY_SECRET` to the frontend.
+- `amount` comes from the database — client-supplied prices are ignored.
+
+**Frontend (Razorpay Checkout)** — after payment, call verify:
+```js
+await fetch(`${API}/subscription/verify`, {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    orderId: response.razorpay_order_id,
+    paymentId: response.razorpay_payment_id,
+    signature: response.razorpay_signature,
+  }),
+});
+```
+
+```bash
+# Verify payment and activate subscription (server verifies signature + provider)
+curl -X POST $API/subscription/verify \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"orderId":"order_rAz123","paymentId":"pay_xyz","signature":"..."}'
+```
+
+Response (200): subscription becomes `ACTIVE` until `currentPeriodEnd`. Re-verifying is idempotent (`alreadyVerified: true`).
+
+---
+
+### 4. Gym owner: history & cancel
+
+```bash
+# Subscription + payment history
+curl $API/subscription/history -b cookies.txt
+
+# Cancel (default: at end of paid period; access continues until currentPeriodEnd)
+curl -X POST $API/subscription/cancel \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{}'
+```
+
+---
+
+### 5. Super-admin (promote first, out of band)
+
+```bash
+tsx scripts/make-super-admin.mjs superadmin@example.com
+```
+
+Then use `admin-cookies.txt` for all `/api/v1/admin/subscription/*` endpoints. Every admin endpoint requires the `SUPER_ADMIN` role (gym OWNER/ADMIN/RECEPTIONIST are rejected).
+
+| Action | Example |
+|--------|---------|
+| List all plans (incl. inactive) | `GET /api/v1/admin/subscription/plans` |
+| Create plan | `POST /api/v1/admin/subscription/plans` `{code, name, pricePaise, durationMonths, ...}` |
+| Activate/deactivate plan | `PATCH /api/v1/admin/subscription/plans/:id/status` `{isActive: bool}` |
+| Search gyms | `GET /api/v1/admin/subscription/gyms?q=downtown&page=1&limit=20` |
+| View gym subscription + history | `GET /api/v1/admin/subscription/gyms/:gymId` |
+| Extend trial (audited) | `POST /api/v1/admin/subscription/gyms/:gymId/extend-trial` `{additionalDays, reason}` |
+| Grant manual access (audited) | `POST /api/v1/admin/subscription/gyms/:gymId/grant-access` `{expiresAt, reason}` |
+| Read settings | `GET /api/v1/admin/subscription/settings` |
+| Update settings | `PATCH /api/v1/admin/subscription/settings` `{trialDurationDays, trialEnabled, ...}` |
+
+Example — extend a trial:
+```bash
+curl -X POST $API/admin/subscription/gyms/GYM_ID/extend-trial \
+  -H "Content-Type: application/json" \
+  -b admin-cookies.txt \
+  -d '{"additionalDays":7,"reason":"Support issue"}'
+```
+
+---
+
+### 6. Razorpay webhook
+
+Register in Razorpay dashboard:
+```
+POST https://your-backend.com/api/v1/subscription/webhooks/razorpay
+```
+
+Required env vars (never commit real values):
+```
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
+```
+
+The webhook verifies `X-Razorpay-Signature` against the **raw request body**, deduplicates events, and:
+- `payment.captured` / `payment.authorized` → activates the subscription (after server-side amount/currency check)
+- `payment.failed` → marks payment `FAILED`
+- `refund.processed` → marks payment `REFUNDED`, subscription `PAST_DUE`
+- `charge.disputed` → marks payment `DISPUTED`
+
+---
+
+### 7. Entitlement middleware (402 on expiry)
+
+Protected gym-management routes check the subscription on every request:
+
+- `members`, `plans` (gym's own membership plans), `memberships`, `attendence`, `expenses`, `reports`, `staff`
+
+Expired → `402 SUBSCRIPTION_REQUIRED`:
+```json
+{
+  "error": "Subscription required",
+  "code": "SUBSCRIPTION_REQUIRED",
+  "reason": "TRIAL_EXPIRED",
+  "expiresAt": "2026-11-01T10:00:00.000Z",
+  "remainingDays": 0,
+  "message": "Your free trial has expired. Please subscribe to continue using gym management features."
+}
+```
+
+Always accessible when expired: login, `/auth/me`, `/subscription/plans`, `/me`, `/history`, `/trial`, `/checkout`, `/verify`, `/cancel`.
+
+A `CANCELLED` subscription with `cancelAtPeriodEnd: true` keeps access until `currentPeriodEnd` (not revoked immediately).
+
+---
+
+### 8. Tests
+
+```bash
+npm test
+```
+
+Covers trial eligibility, concurrency-safe duplicate-trial prevention, plan super-admin permissions, tenant isolation, checkout using DB price, and server-side expiry/entitlement calculation.
+
+Expected: `✔ pass 25  ✔ fail 0`.
+
+---
+
 ## Current integration blockers
 
 Do not build frontend flows against these routes until their backend handlers and Prisma schema are aligned:

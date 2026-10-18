@@ -43,6 +43,20 @@ export function allowRoles(...roles) {
   };
 }
 
+// SaaS platform owner only. Gym OWNER/ADMIN/RECEPTIONIST users are rejected.
+// The role is never assignable from client input (better-auth marks the
+// `role` additional field input:false); promote a user out-of-band with
+// `node scripts/make-super-admin.mjs <email>`.
+export function requireSuperAdmin(req, res, next) {
+  if (req.user?.role !== "SUPER_ADMIN") {
+    return res.status(403).json({
+      error: "You do not have permission",
+      code: "SUPER_ADMIN_REQUIRED",
+    });
+  }
+  next();
+}
+
 // RECEPTIONIST rule: can only read (GET) and create (POST).
 // Any PUT / PATCH / DELETE from a RECEPTIONIST is rejected here,
 // so individual controllers don't need role checks.

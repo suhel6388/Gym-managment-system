@@ -12,4 +12,8 @@ export default defineConfig({
     // url: process.env["DATABASE_URL"],
     url: process.env["DIRECT_URL"],
   },
+  seed: {
+    command: "npx tsx prisma/seed.mjs",
+    import: [],
+  },
 });
