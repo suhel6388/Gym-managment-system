@@ -45,6 +45,7 @@ model Gym {
   name      String
   phone     String?
   email     String?
+  address   String?    @db.Text
   createdAt DateTime   @default(now())
   users     User[]
   members   Member[]

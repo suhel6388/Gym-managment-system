@@ -3,10 +3,19 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { emailOTP } from "better-auth/plugins";
 import { Pool } from "pg";
 import {prisma} from "./prisma"
-import { sendOTPEmail } from "./email";
+import { sendOTPEmail, sendPasswordResetEmail } from "./email";
 
 import dotenv from "dotenv";
 dotenv.config();
+
+// Frontend origin used for links in auth emails (first allowed client origin).
+function clientOrigin(): string {
+  return (process.env.CLIENT_ORIGIN || "http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)[0];
+}
+
 export const auth = betterAuth({
     database: prismaAdapter(prisma, {
         provider: "postgresql", 
@@ -26,6 +35,13 @@ export const auth = betterAuth({
  emailAndPassword:{
   enabled:true,
   requireEmailVerification: true,
+   // Password-reset emails go through the existing SMTP service. The link
+   // points at the frontend reset page, which posts token+newPassword back
+   // to POST /api/v1/auth/reset-password.
+   async sendResetPassword({ user, token }) {
+     const url = `${clientOrigin()}/reset-password?token=${encodeURIComponent(token)}`;
+     await sendPasswordResetEmail(user.email, url);
+   },
  },
  emailVerification: {
    autoSignInAfterVerification: true,
@@ -34,6 +50,7 @@ export const auth = betterAuth({
    emailOTP({
      otpLength: 6,
      expiresIn: 300,
+     allowedAttempts: 3,
      sendVerificationOnSignUp: true,
      async sendVerificationOTP({ email, otp, type }) {
        if (type !== "email-verification") return;

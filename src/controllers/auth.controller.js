@@ -42,6 +42,15 @@ const googleSchema = z.object({
   callbackURL: z.string().url().optional(),
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().trim().min(1, "Reset token is required"),
+  newPassword: z.string().min(8).max(128),
+});
+
 function trustedOrigins() {
   return (process.env.CLIENT_ORIGIN || "http://localhost:3000")
     .split(",")
@@ -278,6 +287,63 @@ export async function login(req, res, next) {
   }
 }
 
+// POST /api/v1/auth/forgot-password — { email }
+// Always answers with the same neutral message so the endpoint cannot be used
+// to enumerate accounts. The reset link is delivered by Better Auth's
+// sendResetPassword hook (see src/lib/auth.ts).
+export async function forgotPassword(req, res, next) {
+  try {
+    const input = forgotPasswordSchema.parse(req.body);
+    await auth.api.requestPasswordReset({
+      body: { email: input.email },
+      headers: fromNodeHeaders(req.headers),
+      asResponse: true,
+    });
+    return res.json({ message: "If an account exists for this email, a password reset link was sent." });
+  } catch (err) {
+    if (err?.name === "ZodError") {
+      const first = err?.issues?.[0];
+      return res.status(400).json({ error: first?.message ?? "Validation failed" });
+    }
+    // Never surface Better Auth's "user not found" style errors here.
+    if (err?.statusCode ?? err?.status) {
+      return res.json({ message: "If an account exists for this email, a password reset link was sent." });
+    }
+    next(err);
+  }
+}
+
+// POST /api/v1/auth/reset-password — { token, newPassword }
+export async function resetPassword(req, res, next) {
+  try {
+    const input = resetPasswordSchema.parse(req.body);
+    const response = await auth.api.resetPassword({
+      body: { token: input.token, newPassword: input.newPassword },
+      headers: fromNodeHeaders(req.headers),
+      asResponse: true,
+    });
+    if (response.status >= 400) {
+      const body = await response.json().catch(() => null);
+      const code = body?.code;
+      const message =
+        code === "INVALID_TOKEN"
+          ? "This reset link is invalid or has expired. Request a new one."
+          : body?.message ?? "Could not reset the password. Request a new link and try again.";
+      return res.status(response.status).json({ error: message });
+    }
+    return res.json({ message: "Password updated. Sign in with your new password." });
+  } catch (err) {
+    if (err?.name === "ZodError") {
+      const first = err?.issues?.[0];
+      return res.status(400).json({ error: first?.message ?? "Validation failed" });
+    }
+    if (err?.statusCode ?? err?.status) {
+      return res.status(authErrorStatus(err)).json({ error: authErrorMessage(err) });
+    }
+    next(err);
+  }
+}
+
 // POST /api/v1/auth/logout
 export async function logout(req, res, next) {
   try {
@@ -322,12 +388,18 @@ export async function setupGym(req, res, next) {
     const input = z.object({
       name: z.string().trim().min(2).max(120),
       phone: z.string().trim().max(30).optional(),
-      email: z.string().email().optional()
+      email: z.string().email().optional(),
+      address: z.string().trim().max(300).optional()
     }).parse(req.body);
 
     const gym = await prisma.$transaction(async (tx) => {
       const created = await tx.gym.create({
-        data: { name: input.name, phone: input.phone, email: input.email }
+        data: {
+          name: input.name,
+          phone: input.phone || null,
+          email: input.email || null,
+          address: input.address || null
+        }
       });
       await tx.user.update({
         where: { id: req.user.id },
