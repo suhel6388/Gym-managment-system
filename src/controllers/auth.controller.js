@@ -112,18 +112,60 @@ function authErrorMessage(err) {
   return err?.body?.message ?? err?.message ?? "Authentication failed";
 }
 
+/**
+ * Request a fresh email-verification OTP. Best effort: signup and login must
+ * still redirect the user to the verify-email screen even if SMTP/rate limits
+ * prevent the email from going out — that screen offers "Resend OTP".
+ */
+async function sendVerificationOtp(email, headers) {
+  try {
+    await auth.api.sendVerificationOTP({
+      body: { email, type: "email-verification" },
+      headers,
+      asResponse: true,
+    });
+  } catch {
+    // Ignore — the user can request another code from the verification screen.
+  }
+}
+
+/**
+ * Response for a signup whose email already exists but was never verified.
+ * The account is not duplicated: a new OTP is sent and the client continues
+ * the same verification flow.
+ */
+function unverifiedSignupResponse(res, email) {
+  return res.status(200).json({
+    code: "EMAIL_NOT_VERIFIED",
+    message: "This email is already registered but not verified. A new 6-digit code was sent to your email.",
+    email,
+    requiresEmailVerification: true,
+    user: null,
+  });
+}
+
 // POST /api/v1/auth/signup
 export async function signup(req, res, next) {
   try {
     const input = signupSchema.parse(req.body);
 
     // Pre-check: email already registered?
+    // - verified account  -> real conflict; tell the user to sign in.
+    // - unverified account -> resume verification: resend the OTP and redirect
+    //   the client to the verify-email screen instead of blocking signup.
     const existingEmail = await prisma.user.findUnique({
       where: { email: input.email },
-      select: { id: true },
+      select: { id: true, emailVerified: true },
     });
     if (existingEmail) {
-      return res.status(409).json({ error: "An account with this email already exists" });
+      if (!existingEmail.emailVerified) {
+        await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
+        return unverifiedSignupResponse(res, input.email);
+      }
+      return res.status(409).json({
+        code: "EMAIL_ALREADY_REGISTERED",
+        error: "An account with this email already exists",
+      });
     }
 
     // Pre-check: mobile number already registered?
@@ -140,7 +182,8 @@ export async function signup(req, res, next) {
       headers: fromNodeHeaders(req.headers),
       asResponse: true,
     });
-    // Better Auth returns 422 when the email is taken — surface it as 409.
+    // Better Auth returns 422 when the email is taken — surface it as 409,
+    // except for an unverified account, which resumes OTP verification.
     if (response.status === 422) {
       forwardCookies(response, res);
       const body = await response.clone().json().catch(() => null);
@@ -148,7 +191,18 @@ export async function signup(req, res, next) {
       if (msg.includes("phone")) {
         return res.status(409).json({ error: "An account with this mobile number already exists" });
       }
-      return res.status(409).json({ error: "An account with this email already exists" });
+      const existing = await prisma.user.findUnique({
+        where: { email: input.email },
+        select: { emailVerified: true },
+      });
+      if (existing && !existing.emailVerified) {
+        await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
+        return unverifiedSignupResponse(res, input.email);
+      }
+      return res.status(409).json({
+        code: "EMAIL_ALREADY_REGISTERED",
+        error: "An account with this email already exists",
+      });
     }
     if (response.status >= 400) {
       return forwardAuthResponse(response, res);
@@ -171,7 +225,21 @@ export async function signup(req, res, next) {
       if (target.includes("phone")) {
         return res.status(409).json({ error: "An account with this mobile number already exists" });
       }
-      return res.status(409).json({ error: "An account with this email already exists" });
+      const email = String(req.body?.email ?? "").trim().toLowerCase();
+      const existing = email
+        ? await prisma.user.findUnique({
+            where: { email },
+            select: { emailVerified: true },
+          })
+        : null;
+      if (existing && !existing.emailVerified) {
+        await sendVerificationOtp(email, fromNodeHeaders(req.headers));
+        return unverifiedSignupResponse(res, email);
+      }
+      return res.status(409).json({
+        code: "EMAIL_ALREADY_REGISTERED",
+        error: "An account with this email already exists",
+      });
     }
     if (err?.statusCode ?? err?.status) {
       return res.status(authErrorStatus(err)).json({ error: authErrorMessage(err) });
@@ -214,6 +282,15 @@ export async function verifyEmail(req, res, next) {
 export async function resendOTP(req, res, next) {
   try {
     const input = emailSchema.parse(req.body);
+    // Only unverified accounts need a new code. Unknown or already-verified
+    // emails get the same neutral response without sending anything.
+    const user = await prisma.user.findUnique({
+      where: { email: input.email },
+      select: { emailVerified: true },
+    });
+    if (!user || user.emailVerified) {
+      return res.json({ message: "If an account exists for this email, a new code was sent." });
+    }
     const response = await auth.api.sendVerificationOTP({
       body: { email: input.email, type: "email-verification" },
       headers: fromNodeHeaders(req.headers),
@@ -267,16 +344,14 @@ export async function login(req, res, next) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
     if (response.status === 403) {
-      // Email not verified — send a fresh OTP so the user can continue.
-      try {
-        await auth.api.sendVerificationOTP({
-          body: { email: input.email, type: "email-verification" },
-          headers: fromNodeHeaders(req.headers),
-          asResponse: true,
-        });
-      } catch { /* best effort — login error below is what matters */ }
+      // Email not verified — send a fresh OTP and let the client redirect to
+      // the verify-email screen to finish signing in.
+      await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
       forwardCookies(response, res);
-      return res.status(403).json({ error: "Email not verified. A new code was sent to your email." });
+      return res.status(403).json({
+        code: "EMAIL_NOT_VERIFIED",
+        error: "Email not verified. A new 6-digit code was sent to your email.",
+      });
     }
     return forwardAuthResponse(response, res);
   } catch (err) {
@@ -371,8 +446,19 @@ export async function me(req, res, next) {
     }
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { id: true, name: true, email: true, phone: true, gymId: true, role: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        gymId: true,
+        role: true,
+        emailVerified: true,
+      },
     });
+    // `emailVerified` is included so the client can route an unverified
+    // session to the OTP screen. Gym data endpoints are still gated by the
+    // authenticate middleware, which rejects unverified users outright.
     return res.json({ data: { user: user ?? session.user, session: session.session ?? null } });
   } catch (err) {
     next(err);

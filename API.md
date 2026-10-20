@@ -79,13 +79,13 @@ Sanity check: `GET http://localhost:5000/api/v1/health` → `{ "status": "ok" }`
 
 ### 5. Recommended frontend integration order
 
-1. `POST /api/v1/auth/signup` → read the OTP from the user's email (or the backend console in dev).
+1. `POST /api/v1/auth/signup` → read the OTP from the user's email (or the backend console in dev). If the response has `requiresEmailVerification: true`, the email already existed unverified and a new OTP was sent — go straight to step 2.
 2. `POST /api/v1/auth/verify-email` → user is now signed in (session cookie set).
 3. `GET /api/v1/auth/me` → if `user.gymId` is `null`, call `POST /api/v1/auth/setup-gym`.
 4. Use the gym APIs (members, plans, memberships, attendance, expenses, reports) with `credentials: "include"`.
-5. On app load, call `GET /api/v1/auth/me`: `401` → show login; `gymId: null` → show gym setup; otherwise → show the dashboard.
+5. On app load, call `GET /api/v1/auth/me`: `401` → show login; `emailVerified: false` → show the OTP screen; `gymId: null` → show gym setup; otherwise → show the dashboard.
 
-> **Note:** login is blocked until the email is verified (`403` + a fresh OTP is sent). Google sign-in skips OTP because Google verifies the email.
+> **Note:** login and every gym-data endpoint are blocked until the email is verified (`403` + a fresh OTP is sent on login). Google sign-in skips OTP because Google verifies the email.
 
 ## Base URL and requests
 
@@ -128,19 +128,25 @@ Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`S
 {
   "name": "Aarav Patel",
   "email": "owner@example.com",
+  "phone": "+919876543210",
   "password": "password123"
 }
 ```
 
-- `name` 2–100 chars, valid `email`, `password` 8–128 chars.
+- `name` 2–100 chars, valid `email`, valid mobile `phone`, `password` 8–128 chars.
 - Success (`201`) returns `{ "message", "user": { "id", "name", "email", ... } }`. No session cookie yet — a 6-digit OTP is emailed and must be verified first.
-- Duplicate email returns `409` with `{ "error": "An account with this email already exists" }`.
+- **Already registered and verified:** `409` with `{ "code": "EMAIL_ALREADY_REGISTERED", "error": "An account with this email already exists" }`. The client should offer sign-in.
+- **Already registered but not verified:** `200` with
+  `{ "code": "EMAIL_NOT_VERIFIED", "requiresEmailVerification": true, "email", "message" }`.
+  The backend re-sends a fresh OTP; the client must continue on the verify-email screen. No duplicate account is created.
+- Unverified accounts still holding a session are rejected by every protected API with
+  `403 { "code": "EMAIL_NOT_VERIFIED", "error": "Email not verified. Verify your email to continue." }`.
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/auth/signup \
   -H "Content-Type: application/json" \
   -c cookies.txt \
-  -d '{"name":"Aarav Patel","email":"owner@example.com","password":"password123"}'
+  -d '{"name":"Aarav Patel","email":"owner@example.com","phone":"+919876543210","password":"password123"}'
 ```
 
 ```js
@@ -148,8 +154,17 @@ const res = await fetch(`${API_BASE}/auth/signup`, {
   method: "POST",
   credentials: "include",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ name: "Aarav Patel", email: "owner@example.com", password: "password123" })
+  body: JSON.stringify({
+    name: "Aarav Patel",
+    email: "owner@example.com",
+    phone: "+919876543210",
+    password: "password123"
+  })
 });
+const result = await res.json();
+if (result.requiresEmailVerification) {
+  // Existing unverified account: show the OTP screen for result.email.
+}
 ```
 
 ### `POST /api/v1/auth/verify-email`
@@ -218,7 +233,9 @@ window.location.href = url; // Google consent -> back to callbackURL with a sess
 
 - Optional `rememberMe` boolean (defaults to `true`).
 - Success (`200`) returns the session payload and sets the cookie; wrong credentials return `401` with `{ "error": "Invalid email or password" }`.
-- Unverified email returns `403` with `{ "error": "Email not verified. A new code was sent to your email." }` (a fresh OTP is sent automatically).
+- Unverified email returns `403` with
+  `{ "code": "EMAIL_NOT_VERIFIED", "error": "Email not verified. A new 6-digit code was sent to your email." }`.
+  A fresh OTP is sent automatically; redirect the user to `/verify-email?email=...&reason=login`.
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/auth/login \
@@ -236,19 +253,30 @@ No body. Clears the session cookie. Send the cookie jar (`-b cookies.txt` / `cre
 ```json
 {
   "data": {
-    "user": { "id": "...", "name": "...", "email": "...", "gymId": null, "role": "ADMIN" },
+    "user": {
+      "id": "...",
+      "name": "...",
+      "email": "...",
+      "emailVerified": true,
+      "gymId": null,
+      "role": "ADMIN"
+    },
     "session": { "...": "..." }
   }
 }
 ```
 
 - `401` when there is no session. `gymId: null` means the user still needs `setup-gym`.
+- `emailVerified: false` means the client must send the user to the verify-email (OTP) screen.
+  That session can call `/auth/me` but every gym-data endpoint will reject it with
+  `403 { "code": "EMAIL_NOT_VERIFIED" }` until verification completes.
 
 After signing in, create a gym:
 
 ### `POST /api/v1/auth/setup-gym`
 
-Requires an authenticated session. A user who already belongs to a gym receives `409`.
+Requires an authenticated **and verified** session. Unverified accounts receive
+`403 { "code": "EMAIL_NOT_VERIFIED" }`; a user who already belongs to a gym receives `409`.
 
 ```json
 {

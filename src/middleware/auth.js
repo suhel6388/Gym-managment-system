@@ -10,8 +10,21 @@ export async function authenticate(req, res, next) {
     }
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { id: true, gymId: true, role: true, email: true },
+      select: { id: true, gymId: true, role: true, email: true, emailVerified: true },
     });
+
+    // A session alone is not enough: accounts must confirm their email before
+    // they can reach any gym data or onboarding endpoint. Google accounts are
+    // created with emailVerified=true by Better Auth.
+    const emailVerified = user?.emailVerified ?? session.user.emailVerified;
+    if (!emailVerified) {
+      return res.status(403).json({
+        error: "Email not verified. Verify your email to continue.",
+        code: "EMAIL_NOT_VERIFIED",
+        email: session.user.email,
+      });
+    }
+
     req.user = {
       id: session.user.id,
       gymId: user?.gymId || session.user.gymId || null,

@@ -2,4 +2,7 @@ node_modules
 # Keep environment variables out of version control
 .env
 
+# Frontend checkout cloned by scripts/build-frontend.mjs when ../client is absent
+/.frontend-src/
+
 /generated/prisma

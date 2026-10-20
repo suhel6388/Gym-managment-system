@@ -31,8 +31,20 @@ export async function requireAuth(
       select: {
         id: true,
         gymId: true,
+        emailVerified: true,
       },
     });
+
+    // Only verified accounts may reach gym data (attendance included).
+    const emailVerified = user?.emailVerified ?? session.user.emailVerified;
+    if (!emailVerified) {
+      return res.status(403).json({
+        success: false,
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Email not verified. Verify your email to continue.",
+        email: session.user.email,
+      });
+    }
 
     if (!user?.gymId) {
       return res.status(403).json({

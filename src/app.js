@@ -1,4 +1,7 @@
 import express from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./lib/auth.js";
 import cors from "cors";
@@ -18,13 +21,37 @@ import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// This file lives in backend/src, so resolve the export against the backend
+// root rather than the process working directory. On Render the working
+// directory is not guaranteed to be the directory that contains `server.js`.
+const publicPath = path.resolve(__dirname, "../public");
+const indexHtmlPath = path.join(publicPath, "index.html");
+const nextStaticPath = `${path.join(publicPath, "_next", "static")}${path.sep}`;
+
 const app = express();
-app.use(helmet());
-app.use(express.static("public"));
+
 const clientOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+
+// A Next.js static export embeds the RSC/hydration payload in inline
+// <script> tags. Helmet's default CSP (`script-src 'self'`) blocks them and
+// leaves the page looking loaded but non-interactive, so allow inline scripts
+// while keeping the rest of Helmet's defaults.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        "script-src": ["'self'", "'unsafe-inline'"],
+      },
+    },
+  }),
+);
+
 app.use(cors({ 
   origin: clientOrigins, 
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -58,7 +85,37 @@ if (process.env.DISABLE_EXPIRY_JOB !== "true") {
   startExpiryJob();
 }
 
+// Serve the static Next.js export. Mounted after the API routes so an API
+// path can never be shadowed by a file with the same name, and so unknown API
+// routes reach the JSON 404 handler below.
+app.use(
+  express.static(publicPath, {
+    index: "index.html",
+    setHeaders(res, filePath) {
+      // Next.js hashes files under /_next/static, so they can be cached
+      // aggressively. Everything else (HTML) keeps the default caching.
+      if (filePath.startsWith(nextStaticPath)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  }),
+);
+
+// express.static already serves index.html for "/" when the build exists.
+// If it does not, return a clear, actionable error instead of a generic JSON
+// 404 so a missing frontend build is easy to diagnose.
+app.get("/", (req, res) => {
+  if (!fs.existsSync(indexHtmlPath)) {
+    return res.status(503).json({
+      error: "Frontend build not found",
+      details: `Expected ${indexHtmlPath}. Run "npm run build:frontend" before starting the server.`,
+    });
+  }
+  res.sendFile(indexHtmlPath);
+});
+
 app.use(notFound);
 app.use(errorHandler);
 
+export { publicPath };
 export default app;

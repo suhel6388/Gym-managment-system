@@ -8,12 +8,28 @@ import { sendOTPEmail, sendPasswordResetEmail } from "./email";
 import dotenv from "dotenv";
 dotenv.config();
 
-// Frontend origin used for links in auth emails (first allowed client origin).
-function clientOrigin(): string {
+// Frontend origins allowed to call Better Auth. CLIENT_ORIGIN lists external
+// frontends (e.g. a Vercel deployment); the service's own URL is always trusted
+// so the frontend served by this Express app works on the same origin.
+function clientOrigins(): string[] {
   return (process.env.CLIENT_ORIGIN || "http://localhost:3000")
     .split(",")
     .map((origin) => origin.trim())
-    .filter(Boolean)[0];
+    .filter(Boolean);
+}
+
+// Frontend origin used for links in auth emails (first allowed client origin).
+function clientOrigin(): string {
+  return clientOrigins()[0];
+}
+
+function trustedOrigins(): string[] {
+  const origins = clientOrigins();
+  const ownUrl = process.env.BETTER_AUTH_URL?.trim();
+  if (ownUrl && !origins.includes(ownUrl)) {
+    origins.push(ownUrl);
+  }
+  return origins;
 }
 
 export const auth = betterAuth({
@@ -21,10 +37,7 @@ export const auth = betterAuth({
         provider: "postgresql", 
     }),
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
-  trustedOrigins: (process.env.CLIENT_ORIGIN || "http://localhost:3000")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean),
+  trustedOrigins: trustedOrigins(),
   user: {
     additionalFields: {
       phone: { type: "string", required: false },
