@@ -32,6 +32,33 @@ function trustedOrigins(): string[] {
   return origins;
 }
 
+/**
+ * A browser frontend on a different site (for example Vercel + Render) needs
+ * `SameSite=None; Secure` cookies, otherwise the session cookie set by the
+ * login response is never sent on the following `/auth/me` request. When the
+ * frontend is served from the same site as the API, keep the safer `Lax`
+ * default.
+ */
+function usesCrossSiteFrontend(): boolean {
+  const ownUrl = process.env.BETTER_AUTH_URL?.trim();
+  if (!ownUrl || !ownUrl.startsWith("https://")) return false;
+
+  let ownHost: string;
+  try {
+    ownHost = new URL(ownUrl).hostname;
+  } catch {
+    return false;
+  }
+
+  return clientOrigins().some((origin) => {
+    try {
+      return new URL(origin).hostname !== ownHost;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export const auth = betterAuth({
     database: prismaAdapter(prisma, {
         provider: "postgresql", 
@@ -83,5 +110,8 @@ export const auth = betterAuth({
  },
  advanced:{
   cookiePrefix:"gym-crm",
+  ...(usesCrossSiteFrontend()
+    ? { defaultCookieAttributes: { sameSite: "none" as const, secure: true } }
+    : {}),
  },
 });
