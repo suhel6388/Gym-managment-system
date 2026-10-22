@@ -18,6 +18,22 @@ function clientOrigins(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Public URL of this API. `BETTER_AUTH_URL` is often left at its local value
+ * when deploying (e.g. http://localhost:5000), which makes Better Auth issue
+ * non-secure, SameSite=Lax cookies. On Render, `RENDER_EXTERNAL_URL` is the
+ * real HTTPS URL, so prefer it whenever the configured URL is local.
+ */
+function ownUrl(): string {
+  const configured = process.env.BETTER_AUTH_URL?.trim();
+  const isLocal = !configured || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configured);
+  if (isLocal) {
+    const renderUrl = process.env.RENDER_EXTERNAL_URL?.trim();
+    if (renderUrl) return renderUrl;
+  }
+  return configured || "http://localhost:5000";
+}
+
 // Frontend origin used for links in auth emails (first allowed client origin).
 function clientOrigin(): string {
   return clientOrigins()[0];
@@ -25,9 +41,9 @@ function clientOrigin(): string {
 
 function trustedOrigins(): string[] {
   const origins = clientOrigins();
-  const ownUrl = process.env.BETTER_AUTH_URL?.trim();
-  if (ownUrl && !origins.includes(ownUrl)) {
-    origins.push(ownUrl);
+  const own = ownUrl();
+  if (!origins.includes(own)) {
+    origins.push(own);
   }
   return origins;
 }
@@ -40,12 +56,12 @@ function trustedOrigins(): string[] {
  * default.
  */
 function usesCrossSiteFrontend(): boolean {
-  const ownUrl = process.env.BETTER_AUTH_URL?.trim();
-  if (!ownUrl || !ownUrl.startsWith("https://")) return false;
+  const own = ownUrl();
+  if (!own.startsWith("https://")) return false;
 
   let ownHost: string;
   try {
-    ownHost = new URL(ownUrl).hostname;
+    ownHost = new URL(own).hostname;
   } catch {
     return false;
   }
@@ -63,7 +79,7 @@ export const auth = betterAuth({
     database: prismaAdapter(prisma, {
         provider: "postgresql", 
     }),
-  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
+  baseURL: ownUrl(),
   trustedOrigins: trustedOrigins(),
   user: {
     additionalFields: {
@@ -110,6 +126,9 @@ export const auth = betterAuth({
  },
  advanced:{
   cookiePrefix:"gym-crm",
+  // Match Better Auth's inferred setting explicitly so the secure-cookie
+  // prefix and SameSite=None always agree with the public URL.
+  useSecureCookies: ownUrl().startsWith("https://"),
   ...(usesCrossSiteFrontend()
     ? { defaultCookieAttributes: { sameSite: "none" as const, secure: true } }
     : {}),
