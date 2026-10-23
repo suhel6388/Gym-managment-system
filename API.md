@@ -760,7 +760,7 @@ The current request validator accepts these fields:
 }
 ```
 
-`amountPaise` is required and must be a non-negative integer; other fields are optional. `PATCH` accepts a partial body. Successful list/create/update responses use `{ "data": ... }`; create returns `201`; delete returns `{ "message": "Expense deleted" }`.
+`title`, `category` and `amountPaise` are required; `amountPaise` must be a non-negative integer (minor units). `expenseDate` and `notes` are optional. `PATCH` accepts a partial body. Successful list/create/update responses use `{ "data": ... }` with `title`, `category`, `amountPaise`, `expenseDate`, `notes` and `createdAt`; create returns `201`; delete returns `{ "message": "Expense deleted" }`.
 
 ## Staff and receptionists
 
@@ -2120,7 +2120,6 @@ Do not build frontend flows against these routes until their backend handlers an
 
 - `/api/v1/members` currently invokes expense handlers and reads/writes expenses, not members.
 - `/api/v1/payments` currently invokes membership handlers; it does not create or list payments.
-- The expense validator uses `title` and `notes`, but the Prisma `Expense` model uses `name` and `description` and requires `name`, `category`, `paymentMode`, and `amountPaise`. Expense writes can therefore fail validation at the database layer.
 - The membership controller uses `FROZEN` and `CANCELLED` statuses, but the Prisma `MembershipStatus` enum currently defines only `ACTIVE`, `EXPIRED`, and `INACTIVE`.
 - The dashboard aggregates `amountPaise` on payments, while the Prisma `Payment` model currently defines `amount`.
 
