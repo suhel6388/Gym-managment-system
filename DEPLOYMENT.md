@@ -1,82 +1,176 @@
-# Deployment — Express API + Next.js frontend on one Render service
+# Deployment — API and frontend
 
-The Express API and the exported Next.js frontend are served by the same Render
-web service, so the site and the API share one origin:
-`https://gym-managment-system-7yiu.onrender.com/`.
+The app supports two layouts:
 
-## Architecture
+1. **Vercel frontend + Render API (current production).** The browser calls the
+   Render API directly. This is a cross-site setup, so auth cookies need
+   `SameSite=None; Secure`.
+2. **One Render service** that serves both the exported Next.js frontend and
+   the API from the same origin.
 
-- `backend/` (this repository) is the Render service. `src/app.js` serves the
-  API and the static frontend from `backend/public`.
-- The frontend source lives in the separate **public** repository
-  `suhel6388/client-gym` and is built as a static export
-  (`output: "export"` in `client/next.config.ts`). Static export is compatible:
-  the app uses the App Router with `generateStaticParams`, and no server
-  actions, route handlers, `next/headers`, or dynamic APIs.
-- `npm run build:frontend` builds that export and replaces `backend/public`
-  with it. The frontend is compiled with `NEXT_PUBLIC_API_URL=/api/v1` so it
-  calls the API on its own origin instead of a hard-coded host.
+The Google OAuth callback always belongs to the **API** origin, never to the
+static frontend. Vercel has no `/api/auth/*` route, so a callback sent there
+returns a 404.
 
-## Render settings
+## Current production layout
 
-| Setting       | Value                          |
-| ------------- | ------------------------------ |
-| Build Command | `npm install && npm run build` |
-| Start Command | `npm start`                    |
-| Health Check  | `/api/v1/health`               |
+| Piece | URL |
+| --- | --- |
+| Frontend (Vercel, static export) | `https://client-gym-iota.vercel.app` |
+| API (Render) | `https://gym-managment-system-7yiu.onrender.com` |
+| Better Auth mount | `https://gym-managment-system-7yiu.onrender.com/api/auth` |
+| Versioned API | `https://gym-managment-system-7yiu.onrender.com/api/v1` |
 
-`npm run build` = `npm run build:backend` (`prisma generate`) +
-`npm run build:frontend`.
+The frontend is built with `output: "export"` and has no server runtime. It
+reads the API host from `NEXT_PUBLIC_API_URL` at build time.
 
-`build:frontend` (`scripts/build-frontend.mjs`):
+## Render environment variables
 
-1. uses a local checkout when one exists (`../client`, `./client`, or `FRONTEND_DIR`);
-2. otherwise shallow-clones `FRONTEND_REPO_URL`
-   (default `https://github.com/suhel6388/client-gym.git`, branch `main`);
-3. runs `npm ci` + `next build` with `NEXT_PUBLIC_API_URL`;
-4. replaces `backend/public` and verifies `index.html`, `404.html`, and
-   `_next/static` are present.
+| Variable | Value |
+| --- | --- |
+| `BETTER_AUTH_URL` | `https://gym-managment-system-7yiu.onrender.com` — the **API** origin |
+| `CLIENT_ORIGIN` | `https://client-gym-iota.vercel.app` — no trailing slash; comma-separated for multiple frontends |
+| `PUBLIC_API_URL` | Optional. Explicit API origin for a custom domain; overrides the values below |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `BETTER_AUTH_SECRET` | At least 32 characters |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth web client credentials |
+| `SMTP_*` | OTP and password-reset email delivery |
+| `RAZORPAY_*` | Subscription billing |
 
-Build-time overrides: `FRONTEND_DIR`, `FRONTEND_REPO_URL`,
-`FRONTEND_REPO_BRANCH`, `FRONTEND_API_URL` (defaults to `/api/v1`).
+`RENDER_EXTERNAL_URL` (and `RENDER_EXTERNAL_HOSTNAME`) is set automatically by
+Render. `src/lib/origins.ts` uses it as a recovery path: if `BETTER_AUTH_URL` is
+missing, local, or equal to one of the `CLIENT_ORIGIN` values, the API origin
+falls back to the Render URL.
+This prevents a common misconfiguration where `BETTER_AUTH_URL` points at the
+frontend and Better Auth builds
+`https://client-gym-iota.vercel.app/api/auth/callback/google`.
 
-> If the service's Build Command cannot be changed (for example it stays at the
-> default `npm install`), commit `backend/public` to this repository — it is
-> intentionally **not** gitignored — so the export ships with the checkout.
+The server logs the resolved public API origin on startup. If it differs from
+`BETTER_AUTH_URL`, the log says so. Fix the variable instead of relying on the
+fallback.
 
-## Environment variables
+If the API uses a custom domain that is also listed in `CLIENT_ORIGIN` (a
+same-origin layout), set `PUBLIC_API_URL` to that custom domain. It takes
+precedence over the Render fallback, so the custom domain is never replaced by
+the `onrender.com` hostname.
 
-Required for the frontend + auth to work on the Render origin:
+## Vercel environment variables
 
-- `BETTER_AUTH_URL=https://gym-managment-system-7yiu.onrender.com` — base URL
-  for Better Auth links/callbacks. It is also always added to
-  `trustedOrigins` in `src/lib/auth.ts`, so same-origin auth requests are
-  accepted even when `CLIENT_ORIGIN` only lists an external frontend.
-- `CLIENT_ORIGIN=https://gym-managment-system-7yiu.onrender.com` — CORS and
-  auth email links. Comma-separated; keep the Vercel URL too if that frontend
-  stays in use.
-- Google OAuth → Authorized redirect URI:
-  `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`
+| Variable | Value |
+| --- | --- |
+| `NEXT_PUBLIC_API_URL` | `https://gym-managment-system-7yiu.onrender.com` |
 
-Existing service variables (unchanged): `DATABASE_URL`, `BETTER_AUTH_SECRET`,
-SMTP settings, Razorpay keys, `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+`NEXT_PUBLIC_*` values are inlined during `next build`. After changing it,
+trigger a new Vercel deployment; changing it only in the dashboard does not
+update an existing build.
+
+## Google Cloud Console
+
+Create an OAuth client of type **Web application** and add these **Authorized
+redirect URIs**:
+
+- Production: `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`
+- Local: `http://localhost:5000/api/auth/callback/google`
+
+Do **not** add `https://client-gym-iota.vercel.app/api/auth/callback/google`.
+Google redirects the browser to the URI generated by the API's `baseURL`; the
+Vercel host cannot complete the code exchange.
+
+Authorized JavaScript origins are not required for this server-side redirect
+flow. If the consent screen is in **Testing** mode, add every Google account
+used for testing as a test user.
+
+## Cross-site cookies
+
+When the API is HTTPS and the frontend host differs, `src/lib/auth.ts` sets
+`SameSite=None; Secure` on Better Auth cookies (including the OAuth state
+cookie). Without this, the browser drops the state cookie during the
+cross-site POST and the session cookie during the following `/auth/me` request.
+
+Some browsers block third-party cookies by default (Safari ITP, Chrome
+incognito, some enterprise policies). In that case the OAuth flow can end with
+`state_mismatch` or a 401 on `/auth/me` even when the configuration is correct.
+Options:
+
+- allow third-party cookies for the site while testing;
+- serve the frontend and API from the same site (for example a custom domain
+  with `app.example.com` and `api.example.com`, or the single Render layout
+  below).
+
+## If the callback still returns 404
+
+Check which server answered:
+
+```bash
+curl -I https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google
+```
+
+A healthy request reaches Render: look for `x-render-origin-server: Render` or
+`rndr-id` in the response headers. A response with `server: Vercel` and
+`x-vercel-cache: HIT` means the request never reached Render — a DNS/CDN cache
+is serving the old Vercel 404. Purge the cache (Vercel dashboard → project →
+Settings → Domains, or the CDN in front of the API), then retry. A request that
+reaches Render is answered by Better Auth; without an OAuth state it redirects
+with `?error=state_not_found`, which is expected for a manual `curl`.
+
+## Single Render service (optional same-site layout)
+
+- Build command: `npm install && npm run build`
+- Start command: `npm start`
+- Health check: `/api/v1/health`
+- `npm run build` runs `prisma generate` and `scripts/build-frontend.mjs`,
+  which builds the Next.js export and replaces `backend/public`.
+- Set `BETTER_AUTH_URL=https://gym-managment-system-7yiu.onrender.com`,
+  `CLIENT_ORIGIN=https://gym-managment-system-7yiu.onrender.com`, and build the
+  frontend with `NEXT_PUBLIC_API_URL=/api/v1`.
+- Google redirect URI:
+  `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`.
+- `build:frontend` uses a local `../client` checkout when present, otherwise
+  shallow-clones `FRONTEND_REPO_URL` (default
+  `https://github.com/suhel6388/client-gym.git`). Overrides:
+  `FRONTEND_DIR`, `FRONTEND_REPO_URL`, `FRONTEND_REPO_BRANCH`,
+  `FRONTEND_API_URL`.
 
 ## Local development
 
-- Backend: `npm run dev` (port 5000).
-- Frontend dev server: `cd ../client && npm run dev`, with
-  `NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1` in `client/.env.local`.
-- Rebuild the frontend that the backend serves: `npm run build:frontend`.
-- Tests: `npm test` (Node 21+; Node's test runner expands the glob).
+Backend (`backend/.env`):
 
-## How requests are handled
+```dotenv
+BETTER_AUTH_URL=http://localhost:5000
+CLIENT_ORIGIN=http://localhost:3000
+```
 
-- `/api/*` → API routes; unknown API paths return JSON
-  `{"error":"Route not found"}`.
-- `/`, `/login/`, `/members/add/`, … → exported HTML. `/login` (no trailing
-  slash) 301-redirects to `/login/`.
-- `/_next/static/*` → JS/CSS with `Cache-Control: immutable`.
-- Unknown page paths → the exported `404.html` with status 404.
-- Missing assets (`*.js`, `*.css`, images) → plain-text 404, never HTML.
-- If `public/index.html` is missing (frontend not built/copied) → `/` returns
-  a 503 JSON error naming the expected absolute path.
+Frontend (`client/.env.local`):
+
+```dotenv
+NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1
+```
+
+The current client API layer rejects localhost values and falls back to the
+deployed Render API, so local frontend development talks to the deployed API
+unless that behavior is changed.
+
+Run `npm run dev` in `backend/` (port 5000) and `npm run dev` in `client/`
+(port 3000). The Google redirect URI for local backend testing is
+`http://localhost:5000/api/auth/callback/google`.
+
+## Verification
+
+```bash
+curl -s https://gym-managment-system-7yiu.onrender.com/api/v1/health
+curl -s https://gym-managment-system-7yiu.onrender.com/api/auth/ok
+```
+
+Then request a Google URL and confirm `redirect_uri` uses the Render host:
+
+```bash
+curl -s -X POST https://gym-managment-system-7yiu.onrender.com/api/v1/auth/google \
+  -H "Content-Type: application/json" \
+  -d '{"callbackURL":"https://client-gym-iota.vercel.app/auth/callback"}'
+```
+
+The returned URL must contain:
+
+```text
+redirect_uri=https%3A%2F%2Fgym-managment-system-7yiu.onrender.com%2Fapi%2Fauth%2Fcallback%2Fgoogle
+```

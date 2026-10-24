@@ -54,8 +54,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 | `DATABASE_URL` | Yes | PostgreSQL connection string (pooler URL) |
 | `DIRECT_URL` | For migrations | Direct (non-pooler) connection string |
 | `BETTER_AUTH_SECRET` | Yes | Min 32 chars; signs sessions (server refuses to start without it) |
-| `BETTER_AUTH_URL` | Yes | Public backend URL, e.g. `http://localhost:5000` (used for OAuth callbacks) |
-| `CLIENT_ORIGIN` | Yes | Comma-separated frontend origins allowed by CORS, e.g. `http://localhost:3000,http://localhost:5000` |
+| `BETTER_AUTH_URL` | Yes | Public **API** origin, e.g. `http://localhost:5000` or `https://gym-managment-system-7yiu.onrender.com`. Never the Vercel frontend origin — Better Auth builds the Google callback from it. |
+| `CLIENT_ORIGIN` | Yes | Comma-separated frontend origins allowed by CORS and OAuth redirects, e.g. `http://localhost:3000` or `https://client-gym-iota.vercel.app`. No trailing slash needed. |
+| `PUBLIC_API_URL` | No | Explicit API origin override (custom domain). When unset, `BETTER_AUTH_URL` is used; on Render the service falls back to `RENDER_EXTERNAL_URL` if `BETTER_AUTH_URL` is local or points at a frontend origin. |
 | `PORT` | No | Defaults to `5000` when unset |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | For Google sign-in | From Google Cloud Console → APIs & Services → Credentials (OAuth client, Web application) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | For real OTP emails | Until set, OTPs are logged to the backend console (`[email:dev]`) instead of emailed |
@@ -73,9 +74,19 @@ Sanity check: `GET http://localhost:5000/api/v1/health` → `{ "status": "ok" }`
 
 ### 4. Google sign-in setup (one time)
 
-1. In Google Cloud Console, add the authorized redirect URI `{BETTER_AUTH_URL}/api/auth/callback/google` (locally: `http://localhost:5000/api/auth/callback/google`).
+1. In Google Cloud Console, add the authorized redirect URI
+   `{BETTER_AUTH_URL}/api/auth/callback/google`. Locally that is
+   `http://localhost:5000/api/auth/callback/google`; in production it is the
+   **Render API** host, for example
+   `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`.
+   Do not add the Vercel URL — the static frontend has no `/api/auth` route.
 2. Put the client ID/secret in `.env` and restart the backend.
-3. Frontend calls `POST /api/v1/auth/google`, then redirects the browser to the returned `url`.
+3. Frontend calls `POST /api/v1/auth/google` with `callbackURL` and
+   `errorCallbackURL` on its own origin, then redirects the browser to the
+   returned `url`.
+4. The backend completes the code exchange, sets the session cookie, and
+   redirects to `callbackURL` (`/auth/callback` by default). OAuth failures
+   redirect to `errorCallbackURL` with `?error=<code>`.
 
 ### 5. Recommended frontend integration order
 
@@ -201,11 +212,14 @@ curl -X POST http://localhost:5000/api/v1/auth/verify-email \
 
 ```json
 {
-  "callbackURL": "http://localhost:3000/dashboard"
+  "callbackURL": "http://localhost:3000/auth/callback",
+  "errorCallbackURL": "http://localhost:3000/auth/callback"
 }
 ```
 
-- `callbackURL` is optional (defaults to the first `CLIENT_ORIGIN`) and must belong to an allowed frontend origin.
+- Both URLs are optional and must belong to an allowed `CLIENT_ORIGIN`.
+  `callbackURL` defaults to the first client origin plus `/auth/callback`;
+  `errorCallbackURL` defaults to the callback's origin plus `/auth/callback`.
 - Success (`200`) returns `{ "url": "https://accounts.google.com/...", "redirect": ... }`. Redirect the browser to `url`:
 
 ```js
@@ -213,14 +227,29 @@ const res = await fetch(`${API_BASE}/auth/google`, {
   method: "POST",
   credentials: "include",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ callbackURL: `${window.location.origin}/dashboard` })
+  body: JSON.stringify({
+    callbackURL: `${window.location.origin}/auth/callback`,
+    errorCallbackURL: `${window.location.origin}/auth/callback`
+  })
 });
 const { url } = await res.json();
 window.location.href = url; // Google consent -> back to callbackURL with a session
 ```
 
+- On OAuth failure the backend redirects to
+  `errorCallbackURL?error=<code>` instead of Better Auth's error page on the
+  API host. Failures that happen before the state is available (for example a
+  blocked state cookie) go to the first `CLIENT_ORIGIN`'s `/auth/callback`
+  through `onAPIError.errorURL`. The frontend callback page maps known codes to
+  readable messages.
 - Google verifies the email itself, so Google users skip the OTP step.
-- Google Cloud Console must list this redirect URI: `http://localhost:5000/api/auth/callback/google` (i.e. `{BETTER_AUTH_URL}/api/auth/callback/google`).
+- Google Cloud Console must list the **API** callback:
+  `{BETTER_AUTH_URL}/api/auth/callback/google`. Locally:
+  `http://localhost:5000/api/auth/callback/google`. Production:
+  `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`.
+- The Vercel frontend and Render API are different sites. The backend sets
+  `SameSite=None; Secure` cookies automatically for that layout; see
+  `DEPLOYMENT.md` for browser third-party-cookie caveats.
 
 ### `POST /api/v1/auth/login`
 

@@ -20,6 +20,7 @@ import adminSubscriptionRoutes from "./routes/admin.subscription.route.js";
 import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
+import { getClientOrigins } from "./lib/origins.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,10 +34,9 @@ const nextStaticPath = `${path.join(publicPath, "_next", "static")}${path.sep}`;
 
 const app = express();
 
-const clientOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5000")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+// Normalized (no trailing slash) so a value like
+// `https://client.vercel.app/` still matches the browser's Origin header.
+const clientOrigins = getClientOrigins();
 
 // A Next.js static export embeds the RSC/hydration payload in inline
 // <script> tags. Helmet's default CSP (`script-src 'self'`) blocks them and

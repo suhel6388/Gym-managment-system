@@ -3,6 +3,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
 import { startTrial } from "../services/subscription.service.js";
+import { getClientOrigins } from "../lib/origins.js";
 
 const phoneSchema = z
   .string()
@@ -40,6 +41,7 @@ const verifyOTPSchema = z.object({
 
 const googleSchema = z.object({
   callbackURL: z.string().url().optional(),
+  errorCallbackURL: z.string().url().optional(),
 });
 
 const forgotPasswordSchema = z.object({
@@ -51,28 +53,30 @@ const resetPasswordSchema = z.object({
   newPassword: z.string().min(8).max(128),
 });
 
-function trustedOrigins() {
-  return (process.env.CLIENT_ORIGIN || "http://localhost:3000")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-}
-
-function resolveCallbackURL(input) {
-  const origins = trustedOrigins();
-  if (!input) return origins[0];
+/**
+ * Accept a redirect URL only when it belongs to a configured frontend origin.
+ * The callback page is the default because it knows how to finish onboarding
+ * (dashboard, verify-email or gym setup).
+ */
+function resolveAllowedUrl(input, fallbackPath = "/auth/callback") {
+  const origins = getClientOrigins();
+  if (!input) return `${origins[0]}${fallbackPath}`;
   try {
     const target = new URL(input);
-    const allowed = origins.some((origin) => {
-      try {
-        const o = new URL(origin);
-        return o.origin === target.origin;
-      } catch {
-        return false;
-      }
-    });
-    if (!allowed) return null;
-    return input;
+    if (!origins.includes(target.origin)) return null;
+    return target.toString();
+  } catch {
+    return null;
+  }
+}
+
+function resolveErrorCallbackURL(input, callbackURL) {
+  if (input) return resolveAllowedUrl(input);
+  // Errors must be shown by the frontend callback page, not Better Auth's
+  // error page on the API host. Keep the origin the caller chose, so multiple
+  // allowed frontends each return to their own site.
+  try {
+    return `${new URL(callbackURL).origin}/auth/callback`;
   } catch {
     return null;
   }
@@ -308,16 +312,22 @@ export async function resendOTP(req, res, next) {
   }
 }
 
-// POST /api/v1/auth/google — { callbackURL? } -> { url } (redirect the browser there)
+// POST /api/v1/auth/google — { callbackURL?, errorCallbackURL? } -> { url }
 export async function googleSignIn(req, res, next) {
   try {
     const input = googleSchema.parse(req.body ?? {});
-    const callbackURL = resolveCallbackURL(input.callbackURL);
+    const callbackURL = resolveAllowedUrl(input.callbackURL);
     if (!callbackURL) {
       return res.status(400).json({ error: "callbackURL must belong to an allowed frontend origin" });
     }
+    const errorCallbackURL = resolveErrorCallbackURL(input.errorCallbackURL, callbackURL);
+    if (!errorCallbackURL) {
+      return res.status(400).json({
+        error: "errorCallbackURL must belong to an allowed frontend origin",
+      });
+    }
     const response = await auth.api.signInSocial({
-      body: { provider: "google", callbackURL },
+      body: { provider: "google", callbackURL, errorCallbackURL },
       headers: fromNodeHeaders(req.headers),
       asResponse: true,
     });
