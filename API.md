@@ -59,7 +59,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 | `PUBLIC_API_URL` | No | Explicit API origin override (custom domain). When unset, `BETTER_AUTH_URL` is used; on Render the service falls back to `RENDER_EXTERNAL_URL` if `BETTER_AUTH_URL` is local or points at a frontend origin. |
 | `PORT` | No | Defaults to `5000` when unset |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | For Google sign-in | From Google Cloud Console → APIs & Services → Credentials (OAuth client, Web application) |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | For real OTP emails | Until set, OTPs are logged to the backend console (`[email:dev]`) instead of emailed |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | For real OTP emails | Until set, OTPs are logged to the backend console (`[email:dev]`) instead of emailed. **Render free web services block outbound SMTP ports 25/465/587** — use a provider that supports port `2525`, upgrade the service, or send through an HTTP email API. |
+| `EMAIL_SEND_TIMEOUT_MS` | No | Hard cap for one email delivery (default `12000`). Signup never waits longer than this for SMTP. |
+| `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_GREETING_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_DNS_TIMEOUT_MS` | No | Fail-fast SMTP timeouts (defaults `8000` / `8000` / `15000` / `5000`). |
 
 ### 3. Install, migrate, run
 
@@ -120,7 +122,7 @@ Set `API_BASE` to `http://localhost:5000/api/v1`. The frontend origin must be al
 
 Simple cookie-session auth under `/api/v1/auth` (backed by Better Auth; raw Better Auth endpoints also remain at `/api/auth`). Always send `credentials: "include"` so the session cookie is stored and returned.
 
-Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` in `.env`, via nodemailer). Until those are set, OTPs are logged to the backend console for development.
+Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` in `.env`, via nodemailer). Until those are set, OTPs are logged to the backend console for development. Every send is bounded by `EMAIL_SEND_TIMEOUT_MS`, so an unreachable SMTP server returns `emailSent: false` instead of hanging the request. Render free web services cannot reach SMTP ports 25/465/587; use port 2525 with a provider that supports it, upgrade the Render service, or use an HTTP email API.
 
 | Method | Path | Description |
 |---|---|---|
@@ -145,10 +147,11 @@ Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`S
 ```
 
 - `name` 2–100 chars, valid `email`, valid mobile `phone`, `password` 8–128 chars.
-- Success (`201`) returns `{ "message", "user": { "id", "name", "email", ... } }`. No session cookie yet — a 6-digit OTP is emailed and must be verified first.
+- Success (`201`) returns `{ "message", "emailSent": true, "user": { "id", "name", "email", ... } }`. No session cookie yet — a 6-digit OTP is emailed and must be verified first.
+- If the account is created but the OTP email cannot be delivered (SMTP down/blocked), the response is still `201` with `"emailSent": false`. Send the user to the verify-email screen and surface the Resend button; resend will report the delivery failure.
 - **Already registered and verified:** `409` with `{ "code": "EMAIL_ALREADY_REGISTERED", "error": "An account with this email already exists" }`. The client should offer sign-in.
 - **Already registered but not verified:** `200` with
-  `{ "code": "EMAIL_NOT_VERIFIED", "requiresEmailVerification": true, "email", "message" }`.
+  `{ "code": "EMAIL_NOT_VERIFIED", "requiresEmailVerification": true, "email", "emailSent", "message" }`.
   The backend re-sends a fresh OTP; the client must continue on the verify-email screen. No duplicate account is created.
 - Unverified accounts still holding a session are rejected by every protected API with
   `403 { "code": "EMAIL_NOT_VERIFIED", "error": "Email not verified. Verify your email to continue." }`.
@@ -206,7 +209,7 @@ curl -X POST http://localhost:5000/api/v1/auth/verify-email \
 }
 ```
 
-- Sends a fresh code (invalidates the previous one). Always returns `200` with a generic message so accounts can't be enumerated.
+- Sends a fresh code (invalidates the previous one). Returns `200` with a generic message so accounts can't be enumerated. If the code was generated but the email could not be delivered, returns `502 { "error": "Could not send the verification code right now. Please try again in a moment." }` so the UI can show the real problem.
 
 ### `POST /api/v1/auth/google`
 
@@ -263,8 +266,8 @@ window.location.href = url; // Google consent -> back to callbackURL with a sess
 - Optional `rememberMe` boolean (defaults to `true`).
 - Success (`200`) returns the session payload and sets the cookie; wrong credentials return `401` with `{ "error": "Invalid email or password" }`.
 - Unverified email returns `403` with
-  `{ "code": "EMAIL_NOT_VERIFIED", "error": "Email not verified. A new 6-digit code was sent to your email." }`.
-  A fresh OTP is sent automatically; redirect the user to `/verify-email?email=...&reason=login`.
+  `{ "code": "EMAIL_NOT_VERIFIED", "error": "Email not verified. A new 6-digit code was sent to your email.", "emailSent": true }`.
+  A fresh OTP is sent automatically; redirect the user to `/verify-email?email=...&reason=login`. When `emailSent` is `false`, tell the user to use Resend on that screen.
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/auth/login \

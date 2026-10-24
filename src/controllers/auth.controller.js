@@ -2,6 +2,7 @@ import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
+import { sendOTPEmail } from "../lib/email.js";
 import { startTrial } from "../services/subscription.service.js";
 import { getClientOrigins } from "../lib/origins.js";
 
@@ -117,19 +118,28 @@ function authErrorMessage(err) {
 }
 
 /**
- * Request a fresh email-verification OTP. Best effort: signup and login must
- * still redirect the user to the verify-email screen even if SMTP/rate limits
- * prevent the email from going out — that screen offers "Resend OTP".
+ * Generate and deliver a fresh email-verification OTP.
+ *
+ * Returns true only when the email was actually handed to the SMTP transport.
+ * Better Auth's own sendVerificationOTP endpoint swallows delivery errors
+ * internally, so the OTP is created here and sent explicitly. That lets the
+ * resend endpoint tell the user the truth instead of pretending a code went
+ * out while the SMTP server is unreachable.
  */
-async function sendVerificationOtp(email, headers) {
+async function sendVerificationOtp(email) {
   try {
-    await auth.api.sendVerificationOTP({
+    const otp = await auth.api.createVerificationOTP({
       body: { email, type: "email-verification" },
-      headers,
-      asResponse: true,
     });
-  } catch {
-    // Ignore — the user can request another code from the verification screen.
+    await sendOTPEmail(email, otp);
+    return true;
+  } catch (err) {
+    console.error(
+      `[auth] Could not deliver the verification code to ${email}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return false;
   }
 }
 
@@ -138,11 +148,14 @@ async function sendVerificationOtp(email, headers) {
  * The account is not duplicated: a new OTP is sent and the client continues
  * the same verification flow.
  */
-function unverifiedSignupResponse(res, email) {
+function unverifiedSignupResponse(res, email, emailSent = true) {
   return res.status(200).json({
     code: "EMAIL_NOT_VERIFIED",
-    message: "This email is already registered but not verified. A new 6-digit code was sent to your email.",
+    message: emailSent
+      ? "This email is already registered but not verified. A new 6-digit code was sent to your email."
+      : "This email is already registered but not verified. We couldn't send a new code — use Resend code on the next screen.",
     email,
+    emailSent,
     requiresEmailVerification: true,
     user: null,
   });
@@ -163,8 +176,8 @@ export async function signup(req, res, next) {
     });
     if (existingEmail) {
       if (!existingEmail.emailVerified) {
-        await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
-        return unverifiedSignupResponse(res, input.email);
+        const emailSent = await sendVerificationOtp(input.email);
+        return unverifiedSignupResponse(res, input.email, emailSent);
       }
       return res.status(409).json({
         code: "EMAIL_ALREADY_REGISTERED",
@@ -200,8 +213,8 @@ export async function signup(req, res, next) {
         select: { emailVerified: true },
       });
       if (existing && !existing.emailVerified) {
-        await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
-        return unverifiedSignupResponse(res, input.email);
+        const emailSent = await sendVerificationOtp(input.email);
+        return unverifiedSignupResponse(res, input.email, emailSent);
       }
       return res.status(409).json({
         code: "EMAIL_ALREADY_REGISTERED",
@@ -213,8 +226,14 @@ export async function signup(req, res, next) {
     }
     forwardCookies(response, res);
     const body = await response.json().catch(() => null);
+    // The account exists at this point. Send the verification code explicitly
+    // so delivery failures can be reported instead of turning into a timeout.
+    const emailSent = await sendVerificationOtp(input.email);
     return res.status(201).json({
-      message: "Account created. Enter the 6-digit code sent to your email to verify.",
+      message: emailSent
+        ? "Account created. Enter the 6-digit code sent to your email to verify."
+        : "Account created, but we couldn't send the verification email. Use Resend code on the next screen.",
+      emailSent,
       user: body?.user ?? null,
     });
   } catch (err) {
@@ -237,8 +256,8 @@ export async function signup(req, res, next) {
           })
         : null;
       if (existing && !existing.emailVerified) {
-        await sendVerificationOtp(email, fromNodeHeaders(req.headers));
-        return unverifiedSignupResponse(res, email);
+        const emailSent = await sendVerificationOtp(email);
+        return unverifiedSignupResponse(res, email, emailSent);
       }
       return res.status(409).json({
         code: "EMAIL_ALREADY_REGISTERED",
@@ -295,13 +314,11 @@ export async function resendOTP(req, res, next) {
     if (!user || user.emailVerified) {
       return res.json({ message: "If an account exists for this email, a new code was sent." });
     }
-    const response = await auth.api.sendVerificationOTP({
-      body: { email: input.email, type: "email-verification" },
-      headers: fromNodeHeaders(req.headers),
-      asResponse: true,
-    });
-    if (response.status >= 400) {
-      return forwardAuthResponse(response, res);
+    const emailSent = await sendVerificationOtp(input.email);
+    if (!emailSent) {
+      return res.status(502).json({
+        error: "Could not send the verification code right now. Please try again in a moment.",
+      });
     }
     return res.json({ message: "If an account exists for this email, a new code was sent." });
   } catch (err) {
@@ -356,11 +373,14 @@ export async function login(req, res, next) {
     if (response.status === 403) {
       // Email not verified — send a fresh OTP and let the client redirect to
       // the verify-email screen to finish signing in.
-      await sendVerificationOtp(input.email, fromNodeHeaders(req.headers));
+      const emailSent = await sendVerificationOtp(input.email);
       forwardCookies(response, res);
       return res.status(403).json({
         code: "EMAIL_NOT_VERIFIED",
-        error: "Email not verified. A new 6-digit code was sent to your email.",
+        error: emailSent
+          ? "Email not verified. A new 6-digit code was sent to your email."
+          : "Email not verified, and we couldn't send a new code. Use Resend code on the next screen.",
+        emailSent,
       });
     }
     return forwardAuthResponse(response, res);

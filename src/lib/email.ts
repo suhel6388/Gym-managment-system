@@ -15,18 +15,66 @@ let transporter: Transporter | null = null;
 // environments where you don't control the SMTP inbox.
 const forceConsole = process.env.EMAIL_LOG_OTPS === "true";
 
+/**
+ * Hard cap for a single email delivery. Signup awaits the verification email,
+ * so a slow or unreachable SMTP server must never keep the HTTP request open
+ * until the browser gives up (the client timeout is 30s by default).
+ */
+const emailSendTimeoutMs =
+  Number(process.env.EMAIL_SEND_TIMEOUT_MS) || 12_000;
+
 if (!forceConsole && smtpHost && smtpUser && smtpPass) {
   transporter = nodemailer.createTransport({
     host: smtpHost,
     port: smtpPort,
     secure: smtpPort === 465,
     auth: { user: smtpUser, pass: smtpPass },
+    // Nodemailer's defaults are measured in minutes. Fail fast instead so a
+    // blocked SMTP port (Render free blocks 25/465/587) cannot stall signup.
+    connectionTimeout:
+      Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8_000,
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8_000,
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 15_000,
+    dnsTimeout: Number(process.env.SMTP_DNS_TIMEOUT_MS) || 5_000,
   });
 } else {
   console.warn(
     "[email] SMTP_HOST/SMTP_USER/SMTP_PASS not set — OTPs will be logged to the console instead of emailed. " +
       "Set SMTP_* env vars to send real emails."
   );
+}
+
+// Render blocks outbound traffic on the standard SMTP ports for free web
+// services. Gmail only listens on 465/587, so it cannot deliver mail from a
+// free Render instance; port 2525 with a provider that supports it does work.
+if (transporter && process.env.RENDER && [25, 465, 587].includes(smtpPort)) {
+  console.warn(
+    "[email] Render free web services block outbound SMTP ports 25/465/587. " +
+      "If this service is on the free plan, use a provider that supports port 2525 " +
+      "(Brevo, SendGrid, Mailgun) or upgrade the Render instance. Gmail SMTP will not work."
+  );
+}
+
+/**
+ * Races an async operation against a deadline. The underlying operation is not
+ * cancelled (Nodemailer owns the socket), but the caller is released as soon
+ * as the deadline passes so an HTTP request cannot hang indefinitely.
+ */
+function withTimeout<T>(
+  operation: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+
+  return Promise.race([operation, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function escapeHtml(value: string): string {
@@ -36,6 +84,31 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+async function sendMail(options: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<void> {
+  if (!transporter) {
+    throw new Error("SMTP transport is not configured");
+  }
+
+  try {
+    await withTimeout(
+      transporter.sendMail({ from: fromAddress, ...options }),
+      emailSendTimeoutMs,
+      "Email send"
+    );
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[email] Could not send "${options.subject}" to ${options.to}: ${reason}`
+    );
+    throw err;
+  }
 }
 
 export async function sendOTPEmail(email: string, otp: string): Promise<void> {
@@ -48,7 +121,7 @@ export async function sendOTPEmail(email: string, otp: string): Promise<void> {
     return;
   }
 
-  await transporter.sendMail({ from: fromAddress, to: email, subject, text, html });
+  await sendMail({ to: email, subject, text, html });
 }
 
 /**
@@ -58,7 +131,7 @@ export async function sendOTPEmail(email: string, otp: string): Promise<void> {
  */
 export async function sendPasswordResetEmail(
   email: string,
-  resetUrl: string,
+  resetUrl: string
 ): Promise<void> {
   const subject = "Reset your Gym CRM password";
   const text =
@@ -73,5 +146,5 @@ export async function sendPasswordResetEmail(
     return;
   }
 
-  await transporter.sendMail({ from: fromAddress, to: email, subject, text, html });
+  await sendMail({ to: email, subject, text, html });
 }

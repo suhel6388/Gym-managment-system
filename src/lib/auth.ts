@@ -64,7 +64,10 @@ export const auth = betterAuth({
      otpLength: 6,
      expiresIn: 300,
      allowedAttempts: 3,
-     sendVerificationOnSignUp: true,
+     // The signup controller creates and sends the OTP itself so it can tell
+     // the client whether delivery actually succeeded. Keeping this disabled
+     // also means a slow SMTP server cannot block the signup response.
+     sendVerificationOnSignUp: false,
      async sendVerificationOTP({ email, otp, type }) {
        if (type !== "email-verification") return;
        await sendOTPEmail(email, otp);
