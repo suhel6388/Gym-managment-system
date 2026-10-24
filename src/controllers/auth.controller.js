@@ -131,8 +131,7 @@ async function sendVerificationOtp(email) {
     const otp = await auth.api.createVerificationOTP({
       body: { email, type: "email-verification" },
     });
-    await sendOTPEmail(email, otp);
-    return true;
+    return await sendOTPEmail(email, otp);
   } catch (err) {
     console.error(
       `[auth] Could not deliver the verification code to ${email}: ${

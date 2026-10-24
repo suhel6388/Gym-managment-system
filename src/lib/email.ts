@@ -37,10 +37,14 @@ if (!forceConsole && smtpHost && smtpUser && smtpPass) {
     socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 15_000,
     dnsTimeout: Number(process.env.SMTP_DNS_TIMEOUT_MS) || 5_000,
   });
+} else if (forceConsole) {
+  console.warn(
+    "[email] EMAIL_LOG_OTPS=true — OTPs and password reset links will be logged to the console."
+  );
 } else {
   console.warn(
-    "[email] SMTP_HOST/SMTP_USER/SMTP_PASS not set — OTPs will be logged to the console instead of emailed. " +
-      "Set SMTP_* env vars to send real emails."
+    "[email] SMTP_HOST/SMTP_USER/SMTP_PASS not set — OTP emails cannot be delivered. " +
+      "Set SMTP_* env vars, or set EMAIL_LOG_OTPS=true to log OTPs to the console in development."
   );
 }
 
@@ -111,17 +115,27 @@ async function sendMail(options: {
   }
 }
 
-export async function sendOTPEmail(email: string, otp: string): Promise<void> {
+export async function sendOTPEmail(
+  email: string,
+  otp: string
+): Promise<boolean> {
   const subject = "Your Gym CRM verification code";
   const text = `Your verification code is ${otp}. It expires in 5 minutes.`;
   const html = `<p>Your verification code is <strong>${otp}</strong>.</p><p>It expires in 5 minutes.</p>`;
 
-  if (!transporter || forceConsole) {
+  if (forceConsole) {
     console.log(`[email:dev] OTP for ${email}: ${otp}`);
-    return;
+    return true;
+  }
+
+  // No transport means the OTP was not emailed. Throw so the caller can
+  // report `emailSent: false` instead of falsely claiming delivery.
+  if (!transporter) {
+    throw new Error("SMTP transport is not configured");
   }
 
   await sendMail({ to: email, subject, text, html });
+  return true;
 }
 
 /**
