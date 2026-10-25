@@ -22,6 +22,7 @@ import {
   updateGymAccess,
   getActivity,
 } from "../controllers/super-admin.controller.js";
+import { createAdmin } from "../controllers/super-admin.accounts.controller.js";
 import { authenticate, requireSuperAdmin } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 
@@ -52,5 +53,9 @@ router.post("/gyms/:gymId/extend-expiry", mutationLimit, extendGymExpiry);
 router.post("/gyms/:gymId/trial", mutationLimit, startGymTrial);
 router.post("/gyms/:gymId/trial/end", mutationLimit, endGymTrial);
 router.patch("/gyms/:gymId/access", mutationLimit, updateGymAccess);
+
+// Platform-owner accounts (maximum two). Requires an existing SUPER_ADMIN
+// session; creates the second owner already verified, with no OTP step.
+router.post("/admins", mutationLimit, createAdmin);
 
 export default router;

@@ -8,6 +8,7 @@ import cors from "cors";
 import helmet from "helmet";
 import authRoutes from "./routes/auth.route.js";
 import superAdminBootstrapRoutes from "./routes/super-admin.bootstrap.route.js";
+import superAdminAuthRoutes from "./routes/super-admin.auth.route.js";
 import memberRoutes from "./routes/members.route.js";
 import planRoutes from "./routes/plans.route.js";
 import membershipRoutes from "./routes/membership.routes.js";
@@ -67,6 +68,7 @@ app.get("/api/v1/health", (req, res) => res.json({ status: "ok",
   message: "Api server is working now start testing",
  }));
 app.use("/api/v1/auth", superAdminBootstrapRoutes);
+app.use("/api/v1/auth", superAdminAuthRoutes);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/members", memberRoutes);
 app.use("/api/v1/attendence", attendanceRoutes);

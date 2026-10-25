@@ -19,6 +19,9 @@ router.post(
     windowMs: 15 * 60 * 1000,
     max: 5,
     message: "Too many bootstrap attempts. Try again later.",
+    // Buckets are global in src/middleware/rateLimit.js, so prefix the key to
+    // keep this budget separate from the platform login endpoint.
+    keyFn: (req) => `bootstrap-super-admin:${req.ip ?? "unknown"}`,
   }),
   requireBootstrapAccess,
   bootstrapSuperAdmin,

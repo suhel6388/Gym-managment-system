@@ -89,8 +89,10 @@ export async function bootstrapSuperAdmin(req, res, next) {
 
     const result = await prisma.$transaction(async (tx) => {
       // Serialize concurrent bootstrap calls: without this, two requests could
-      // both see "no SUPER_ADMIN" and create two platform owners.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(8127364512)`;
+      // both see "no SUPER_ADMIN" and create two platform owners. The lock is
+      // selected through a wrapper because pg_advisory_xact_lock returns void,
+      // which Prisma's pg adapter cannot deserialize.
+      await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(8127364512)) AS bootstrap_lock`;
 
       const superAdminCount = await tx.user.count({
         where: { role: "SUPER_ADMIN" },
@@ -99,8 +101,8 @@ export async function bootstrapSuperAdmin(req, res, next) {
         throw httpError(
           409,
           "SUPER_ADMIN_ALREADY_EXISTS",
-          "A platform administrator already exists. Sign in through POST /api/v1/auth/login, " +
-            "or add another platform owner out-of-band with: npm run bootstrap-super-admin -- <email>",
+          "A platform administrator already exists. Sign in through POST /api/v1/auth/super-admin/login, " +
+            "then add the second owner with POST /api/v1/super-admin/admins (maximum two accounts).",
         );
       }
 

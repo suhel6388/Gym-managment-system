@@ -5,12 +5,15 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 ## Contents
 
 - [Setup and getting started](#setup-and-getting-started)
+- [Super Admin API — end-to-end flow](#super-admin-api-end-to-end-flow)
 - [Base URL and requests](#base-url-and-requests)
 - [Authentication](#authentication)
   - [`POST /api/v1/auth/signup`](#post-apiv1authsignup)
   - [`POST /api/v1/auth/verify-email`](#post-apiv1authverify-email)
   - [`POST /api/v1/auth/resend-otp`](#post-apiv1authresend-otp)
   - [`POST /api/v1/auth/google`](#post-apiv1authgoogle)
+  - [`POST /api/v1/auth/bootstrap-super-admin`](#post-apiv1authbootstrap-super-admin)
+  - [`POST /api/v1/auth/super-admin/login`](#post-apiv1authsuper-admin-login)
   - [`POST /api/v1/auth/login`](#post-apiv1authlogin)
   - [`POST /api/v1/auth/logout`](#post-apiv1authlogout)
   - [`GET /api/v1/auth/me`](#get-apiv1authme)
@@ -129,13 +132,66 @@ Environment variables can also be placed in `.env`. The script:
 - is the only supported way to grant platform privileges. Signing in at
   `/login` sends a `SUPER_ADMIN` to `/super-admin`.
 
-The same first account can be created over HTTP, without database access, via
-`POST /api/v1/auth/bootstrap-super-admin` (see the endpoint reference below).
-It accepts only `name`, `email` and `password`, marks the account verified, and
-stops working (`409 SUPER_ADMIN_ALREADY_EXISTS`) once a platform administrator
-exists. Set `SUPER_ADMIN_BOOTSTRAP_SECRET` and send `x-bootstrap-secret` to
-require a shared secret while that window is still open. Either way, sign in
-afterwards through the normal `POST /api/v1/auth/login`.
+## Super Admin API — end-to-end flow
+
+Maximum **two** platform owner accounts. Each is created already verified (`emailVerified: true`, `gymId: null`) with a normal credential row, so no OTP email is ever needed. Every call uses only `name`, `email`, `password`.
+
+### Step 1 — Create the first platform owner
+
+`POST /api/v1/auth/bootstrap-super-admin` is open only while no `SUPER_ADMIN` exists. After the first successful call it answers `409 SUPER_ADMIN_ALREADY_EXISTS` and stays closed (use the CLI script for any later platform owner).
+
+```bash
+curl -X POST https://gym-managment-system-7yiu.onrender.com/api/v1/auth/bootstrap-super-admin \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Suhel Ali","email":"sogiw19883@agaexpress.com","password":"Etrglobal@967606"}'
+```
+
+Success (`201`):
+```json
+{
+  "message": "Existing account promoted to SUPER_ADMIN. Sign in with the password you just supplied.",
+  "promoted": true,
+  "user": { "id": "...", "name": "Suhel Ali", "email": "...", "role": "SUPER_ADMIN", "emailVerified": true, "gymId": null },
+  "login": { "method": "POST", "path": "/api/v1/auth/super-admin/login", "body": { "email": "...", "password": "..." } }
+}
+```
+
+Optional security: set `SUPER_ADMIN_BOOTSTRAP_SECRET` on Render and send `-H "x-bootstrap-secret: <value>"` on every call.
+
+### Step 2 — Sign in as a platform owner
+
+`POST /api/v1/auth/super-admin/login` authenticates **only** `SUPER_ADMIN` accounts and never sends an OTP:
+
+```bash
+curl -X POST https://gym-managment-system-7yiu.onrender.com/api/v1/auth/super-admin/login \
+  -H "Content-Type: application/json" -c admin-cookies.txt \
+  -d '{"email":"sogiw19883@agaexpress.com","password":"Etrglobal@967606"}'
+```
+
+Success (`200`) sets the session cookie and returns `user.role = "SUPER_ADMIN"` plus `"redirect": "/super-admin"`. Gym owners (`ADMIN`), staff (`RECEPTIONIST`) and unknown emails receive `401 INVALID_CREDENTIALS` and **no cookie**.
+
+### Step 3 — Create the second (final) platform owner
+
+`POST /api/v1/super-admin/admins` requires an existing `SUPER_ADMIN` session:
+
+```bash
+curl -X POST https://gym-managment-system-7yiu.onrender.com/api/v1/super-admin/admins \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"name":"Co Owner","email":"co-owner@platform.com","password":"another-strong-password"}'
+```
+
+Hard cap: **two** platform accounts total. At the cap → `409 SUPER_ADMIN_LIMIT_REACHED`. Refuses accounts attached to a gym (`409 ACCOUNT_BELONGS_TO_GYM`). No OTP — the new owner signs in with `POST /api/v1/auth/super-admin/login` immediately.
+
+### Step 4 — Call platform APIs
+
+With the cookie jar from step 2:
+
+```bash
+curl https://gym-managment-system-7yiu.onrender.com/api/v1/super-admin/stats -b admin-cookies.txt
+curl https://gym-managment-system-7yiu.onrender.com/api/v1/super-admin/gyms -b admin-cookies.txt
+```
+
+Every `/api/v1/super-admin/*` request re-checks `role === "SUPER_ADMIN"` from the database; nothing is trusted from the client.
 
 ### 6. Recommended frontend integration order
 
@@ -178,6 +234,7 @@ Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`S
 | `POST` | `/api/v1/auth/resend-otp` | Send a fresh OTP |
 | `POST` | `/api/v1/auth/google` | Start Google sign-in (returns the Google URL to redirect to) |
 | `POST` | `/api/v1/auth/bootstrap-super-admin` | One-time platform-owner creation/promotion; `409` once a `SUPER_ADMIN` exists |
+| `POST` | `/api/v1/auth/super-admin/login` | Platform-owner sign-in (no OTP; `SUPER_ADMIN` accounts only) |
 | `POST` | `/api/v1/auth/login` | Sign in with email and password (requires a verified email) |
 | `POST` | `/api/v1/auth/logout` | Sign out (clears the session cookie) |
 | `GET` | `/api/v1/auth/me` | Current user + gym info (`401` when signed out) |
@@ -331,7 +388,7 @@ registration route and stops working once a `SUPER_ADMIN` exists.
       "emailVerified": true,
       "gymId": null
     },
-    "login": { "method": "POST", "path": "/api/v1/auth/login", "body": { "...": "..." } }
+    "login": { "method": "POST", "path": "/api/v1/auth/super-admin/login", "body": { "...": "..." } }
   }
   ```
   The account is created already verified with `gymId: null`, so no OTP email is
@@ -356,10 +413,65 @@ curl -X POST http://localhost:5000/api/v1/auth/bootstrap-super-admin \
   -H "Content-Type: application/json" \
   -d '{"name":"Platform Owner","email":"owner@platform.com","password":"a-strong-12+-char-password"}'
 
-# Then use the normal login endpoint:
-curl -X POST http://localhost:5000/api/v1/auth/login \
-  -H "Content-Type: application/json" -c cookies.txt \
+# Then use the platform-owner login (no OTP):
+
+```bash
+curl -X POST http://localhost:5000/api/v1/auth/super-admin/login \
+  -H "Content-Type: application/json" -c admin-cookies.txt \
   -d '{"email":"owner@platform.com","password":"a-strong-12+-char-password"}'
+
+curl http://localhost:5000/api/v1/auth/me -b admin-cookies.txt
+```
+
+```
+
+### `POST /api/v1/auth/super-admin/login`
+
+Platform-owner sign-in. Same `User`/`Account` rows and the same password check
+as `POST /auth/login`, with two differences:
+
+- only accounts whose database `role` is `SUPER_ADMIN` can obtain a session.
+  Gym owners (`ADMIN`), staff (`RECEPTIONIST`) and unknown emails all get
+  `401 { "error": "Invalid email or password", "code": "INVALID_CREDENTIALS" }`
+  and **no session cookie is set**;
+- it never generates or sends an OTP, so it works even when SMTP is blocked.
+
+```json
+{ "email": "owner@platform.com", "password": "a-strong-12+-char-password" }
+```
+
+Optional `rememberMe` boolean (defaults to `true`).
+
+Success (`200`) sets the session cookie and returns the Better Auth payload plus
+the resolved user and console path:
+
+```json
+{
+  "token": "...",
+  "user": {
+    "id": "...",
+    "name": "Platform Owner",
+    "email": "owner@platform.com",
+    "role": "SUPER_ADMIN",
+    "emailVerified": true,
+    "gymId": null
+  },
+  "redirect": "/super-admin"
+}
+```
+
+- `400 VALIDATION_FAILED` — missing/invalid email or password.
+- `401 INVALID_CREDENTIALS` — wrong password, unknown email, or a non-platform
+  account.
+- `429 RATE_LIMITED` — 10 attempts per 15 minutes per IP.
+
+```bash
+curl -X POST http://localhost:5000/api/v1/auth/super-admin/login \
+  -H "Content-Type: application/json" \
+  -c admin-cookies.txt \
+  -d '{"email":"owner@platform.com","password":"a-strong-12+-char-password"}'
+
+curl http://localhost:5000/api/v1/auth/me -b admin-cookies.txt
 ```
 
 ### `POST /api/v1/auth/login`
@@ -1154,8 +1266,12 @@ Authentication: Better Auth session cookie (`credentials: "include"`). The
   - Pay via Razorpay on the frontend, then `POST /api/v1/subscription/verify` — verifies signature + provider status and activates the subscription
   - `GET /api/v1/subscription/history` — view subscription and payment history
   - `POST /api/v1/subscription/cancel` — cancel at end of paid period (access continues until `currentPeriodEnd`)
-- **Super-admin flow** (requires `SUPER_ADMIN`; create/promote with
-  `npm run bootstrap-super-admin`, never from client input)
+- **Super-admin flow** (requires `SUPER_ADMIN`; maximum **two** platform
+  accounts. Create the first with `POST /api/v1/auth/bootstrap-super-admin` or
+  `npm run bootstrap-super-admin`; the second is created by an already-signed-in
+  platform owner via `POST /api/v1/super-admin/admins`. Never from `/signup`)
+  - `POST /api/v1/auth/super-admin/login` — platform-owner sign-in, no OTP step
+  - `POST /api/v1/super-admin/admins` — create the second platform owner (`409` at the cap of two)
   - `GET /api/v1/super-admin/stats` — platform totals, revenue and recent activity
   - `GET /api/v1/super-admin/gyms?q=...&status=...` — searchable cross-gym directory
   - `GET /api/v1/super-admin/gyms/:gymId` — owner, subscription, payments, trials, audit log
@@ -1509,11 +1625,12 @@ router.use(authenticate, requireSuperAdmin);
 - `src/services/super-admin.service.js` re-checks `actor.role === "SUPER_ADMIN"`
   inside every exported function (defense in depth), so a service cannot be
   reused by a gym route to leak cross-tenant data.
-- No endpoint in this group can change a user's `role` or `gymId`. Role
-  escalation is impossible through the API; the bootstrap script is the only
-  path.
-- `POST /api/v1/auth/setup-gym` returns
-  `403 SUPER_ADMIN_CANNOT_CREATE_GYM` for platform accounts.
+- The only endpoint that can assign `SUPER_ADMIN` is
+  `POST /api/v1/super-admin/admins`, it requires an existing platform session,
+  and it is capped at **two** accounts. It refuses accounts attached to a gym
+  (`409 ACCOUNT_BELONGS_TO_GYM`). `/signup` still can never pick a role, and
+  `/auth/setup-gym` returns `403 SUPER_ADMIN_CANNOT_CREATE_GYM` for platform
+  accounts.
 
 Create or promote the first administrator (see
 [setup step 5](#5-create-the-first-platform-administrator-one-time)):
@@ -1528,18 +1645,72 @@ npm run bootstrap-super-admin
 npm run bootstrap-super-admin -- owner@platform.com
 ```
 
-Sign in normally at `/login`; the client routes a `SUPER_ADMIN` to `/super-admin`
-and blocks `/dashboard` and `/setup-gym`. Use a cookie jar for the examples:
+Sign in at `/login` (or `POST /api/v1/auth/super-admin/login` for an OTP-free
+sign-in); the client routes a `SUPER_ADMIN` to `/super-admin` and blocks
+`/dashboard` and `/setup-gym`. Use a cookie jar for the examples:
 
 ```bash
 API=http://localhost:5000/api/v1
 
-curl -X POST $API/auth/login \
+curl -X POST $API/auth/super-admin/login \
   -H "Content-Type: application/json" \
   -c admin-cookies.txt \
   -d '{"email":"owner@platform.com","password":"a-strong-12+-char-password"}'
 
 curl $API/super-admin/stats -b admin-cookies.txt
+```
+
+#### `POST /api/v1/super-admin/admins`
+
+Creates (or promotes) the second and final platform owner. Requires an existing
+`SUPER_ADMIN` session; gym owners and staff receive `403 SUPER_ADMIN_REQUIRED`.
+
+```json
+{
+  "name": "Co Owner",
+  "email": "co-owner@platform.com",
+  "password": "a-strong-12+-char-password"
+}
+```
+
+- `name` 2–100 characters, valid `email`, `password` 12–128 characters. Any
+  `role` field is ignored — the account always becomes `SUPER_ADMIN`.
+- No OTP is generated or sent. The account is created `emailVerified: true` with
+  `gymId: null` and a normal credential row, so
+  `POST /api/v1/auth/super-admin/login` works immediately.
+- Cap: **two** platform accounts in total (the bootstrap/CLI account plus this
+  one). At the cap:
+  `409 { "code": "SUPER_ADMIN_LIMIT_REACHED", "details": { "max": 2, "current": 2 } }`.
+- `409 ALREADY_SUPER_ADMIN` — the email is already a platform administrator.
+- `409 ACCOUNT_BELONGS_TO_GYM` — the email is a gym user; platform owners must
+  be separate accounts.
+- An existing gym-less account is promoted, its name updated and its password
+  set to the supplied one (`promoted: true`).
+- Success (`201`):
+  ```json
+  {
+    "message": "Platform administrator created. No OTP is required — sign in with the password you supplied.",
+    "promoted": false,
+    "remainingSlots": 0,
+    "user": {
+      "id": "...",
+      "name": "Co Owner",
+      "email": "co-owner@platform.com",
+      "role": "SUPER_ADMIN",
+      "emailVerified": true,
+      "gymId": null
+    },
+    "login": { "method": "POST", "path": "/api/v1/auth/super-admin/login", "body": { "...": "..." } }
+  }
+  ```
+- Audited with a console line (`[auth] super-admin created ... by <actor id>`);
+  the password is never logged.
+
+```bash
+curl -X POST $API/super-admin/admins \
+  -H "Content-Type: application/json" \
+  -b admin-cookies.txt \
+  -d '{"name":"Co Owner","email":"co-owner@platform.com","password":"a-strong-12+-char-password"}'
 ```
 
 All successful responses use the standard `{ "data": ... }` envelope. Errors are
@@ -2782,6 +2953,7 @@ endpoint. Every endpoint in the group requires the `SUPER_ADMIN` role; gym
 | Start / extend trial | `POST /api/v1/super-admin/gyms/:gymId/trial` `{days?, reason}` |
 | End trial now | `POST /api/v1/super-admin/gyms/:gymId/trial/end` `{reason}` |
 | Suspend / activate access | `PATCH /api/v1/super-admin/gyms/:gymId/access` `{status, expiresAt?, reason}` |
+| Create second platform owner (max 2) | `POST /api/v1/super-admin/admins` `{name, email, password}` |
 | Read plans (incl. inactive) | `GET /api/v1/super-admin/plans` |
 | Read audit trail | `GET /api/v1/super-admin/activity?limit=50` |
 | Create / edit plans and settings | Legacy `/api/v1/admin/subscription/*` (still supported) |

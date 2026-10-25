@@ -84,7 +84,7 @@ function resolveErrorCallbackURL(input, callbackURL) {
 }
 
 // Copy Set-Cookie headers from a Better Auth Response onto the Express res.
-function forwardCookies(authResponse, res) {
+export function forwardCookies(authResponse, res) {
   const getSetCookie =
     typeof authResponse.headers.getSetCookie === "function"
       ? authResponse.headers.getSetCookie()
