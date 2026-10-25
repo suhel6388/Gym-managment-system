@@ -143,6 +143,14 @@ export function computeEntitlement(sub, now = new Date()) {
       reason = "CANCELLED_IMMEDIATE";
       remainingDays = 0;
     }
+  } else if (status === "SUSPENDED") {
+    // Suspension overrides even a paid period that has not ended yet. The
+    // expiry date is still returned so the admin UI can show when the paid
+    // term would have run out.
+    expiresAt = sub.currentPeriodEnd ?? sub.trialEndsAt ?? null;
+    entitled = false;
+    remainingDays = 0;
+    reason = "SUSPENDED";
   } else {
     // EXPIRED, PAST_DUE
     entitled = false;

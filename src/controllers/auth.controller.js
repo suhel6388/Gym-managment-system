@@ -497,6 +497,15 @@ export async function me(req, res, next) {
 // After email or Google sign-in, the user creates/attaches their gym here.
 export async function setupGym(req, res, next) {
   try {
+    // A platform admin must never be converted into a gym owner (or get a gym
+    // attached to the platform account). SUPER_ADMIN is intentionally not a
+    // gym role and is managed only by the bootstrap script.
+    if (req.user.role === "SUPER_ADMIN") {
+      return res.status(403).json({
+        error: "Platform administrators cannot create gyms",
+        code: "SUPER_ADMIN_CANNOT_CREATE_GYM",
+      });
+    }
     if (req.user.gymId) {
       return res.status(409).json({ error: "Your account already belongs to a gym" });
     }

@@ -274,6 +274,9 @@ enum SubscriptionStatus {
   EXPIRED
   CANCELLED
   PAST_DUE
+  // Platform owner suspended the gym's access. Dates are preserved so the gym
+  // can be reactivated without losing its billing period.
+  SUSPENDED
 }
 
 enum SubscriptionPaymentStatus {

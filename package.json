@@ -18,7 +18,8 @@
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio",
     "seed": "tsx prisma/seed.mjs",
-    "make-super-admin": "tsx scripts/make-super-admin.mjs"
+    "make-super-admin": "tsx scripts/make-super-admin.mjs",
+    "bootstrap-super-admin": "tsx scripts/make-super-admin.mjs"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

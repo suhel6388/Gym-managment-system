@@ -38,6 +38,12 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
 - [Error responses](#error-responses)
 - [SaaS Subscription & Billing](#saas-subscription--billing)
+- [Platform administration (super admin)](#platform-administration-super-admin)
+  - [Authorization and bootstrap](#authorization-and-bootstrap)
+  - [Dashboard and gym directory](#dashboard-and-gym-directory)
+  - [Subscription and access actions](#subscription-and-access-actions)
+  - [Audit trail](#audit-trail)
+  - [Platform admin errors](#platform-admin-errors)
 - [Subscription API usage guide](#subscription-api-usage-guide)
 - [Subscription Implementation Guide](#subscription-implementation-guide)
 - [Current integration blockers](#current-integration-blockers)
@@ -64,6 +70,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | For real OTP emails | Until set, OTPs are logged to the backend console (`[email:dev]`) instead of emailed. **Render free web services block outbound SMTP ports 25/465/587** — use a provider that supports port `2525`, upgrade the service, or send through an HTTP email API. |
 | `EMAIL_SEND_TIMEOUT_MS` | No | Hard cap for one email delivery (default `12000`). Signup never waits longer than this for SMTP. |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_GREETING_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_DNS_TIMEOUT_MS` | No | Fail-fast SMTP timeouts (defaults `8000` / `8000` / `15000` / `5000`). |
+| `SUPER_ADMIN_EMAIL` | Bootstrap only | Email for the one-time platform-owner bootstrap. Never read by the running API. |
+| `SUPER_ADMIN_PASSWORD` | Bootstrap only | New-account password, minimum 12 characters. Required when creating; ignored when promoting an existing account. |
+| `SUPER_ADMIN_NAME` | Bootstrap only | Display name for a newly created platform owner (default `Platform Owner`). |
 
 ### 3. Install, migrate, run
 
@@ -92,7 +101,34 @@ Sanity check: `GET http://localhost:5000/api/v1/health` → `{ "status": "ok" }`
    redirects to `callbackURL` (`/auth/callback` by default). OAuth failures
    redirect to `errorCallbackURL` with `?error=<code>`.
 
-### 5. Recommended frontend integration order
+### 5. Create the first platform administrator (one time)
+
+`SUPER_ADMIN` is never assignable from client input, there is no public
+registration route, and `POST /auth/setup-gym` refuses platform accounts. Use the
+bootstrap script with database access:
+
+```bash
+# Create a new, already-verified platform owner (password min 12 chars)
+SUPER_ADMIN_EMAIL=owner@platform.com \
+SUPER_ADMIN_PASSWORD='a-strong-12+-char-password' \
+SUPER_ADMIN_NAME='Platform Owner' \
+npm run bootstrap-super-admin
+
+# Or promote an existing verified account without changing its password
+npm run bootstrap-super-admin -- owner@platform.com
+```
+
+Environment variables can also be placed in `.env`. The script:
+
+- never logs the password;
+- creates the account with `emailVerified: true`, `gymId: null` and a normal
+  Better Auth credential row, so email/password sign-in works immediately;
+- refuses to promote an account that already belongs to a gym unless you pass
+  `--detach-gym` after confirming it is not a gym owner;
+- is the only supported way to grant platform privileges. Signing in at
+  `/login` sends a `SUPER_ADMIN` to `/super-admin`.
+
+### 6. Recommended frontend integration order
 
 1. `POST /api/v1/auth/signup` → read the OTP from the user's email (or the backend console in dev). If the response has `requiresEmailVerification: true`, the email already existed unverified and a new OTP was sent — go straight to step 2.
 2. `POST /api/v1/auth/verify-email` → user is now signed in (session cookie set).
@@ -1028,9 +1064,12 @@ All prices are stored in integer paise (₹499 = 49900). The gym `gymId` is alwa
 derived from the authenticated session — never accepted from the request body.
 
 ### Base path
-`/api/v1/subscription` (gym-owner) and `/api/v1/admin/subscription` (super-admin).
+`/api/v1/subscription` (gym-owner), `/api/v1/super-admin` (platform console),
+and `/api/v1/admin/subscription` (legacy plan/settings admin, still supported).
 
-Authentication: Better Auth session cookie (`credentials: "include"`).
+Authentication: Better Auth session cookie (`credentials: "include"`). The
+`/super-admin` group is SUPER_ADMIN-only; see
+[Platform administration](#platform-administration-super-admin).
 
 ---
 
@@ -1045,24 +1084,29 @@ Authentication: Better Auth session cookie (`credentials: "include"`).
   - Pay via Razorpay on the frontend, then `POST /api/v1/subscription/verify` — verifies signature + provider status and activates the subscription
   - `GET /api/v1/subscription/history` — view subscription and payment history
   - `POST /api/v1/subscription/cancel` — cancel at end of paid period (access continues until `currentPeriodEnd`)
-- **Super-admin flow** (requires `SUPER_ADMIN` role; promote via `tsx scripts/make-super-admin.mjs <email>`)
-  - `GET /api/v1/admin/subscription/plans` — list all plans including inactive
-  - `POST /api/v1/admin/subscription/plans` — create a plan
-  - `PATCH /api/v1/admin/subscription/plans/:id` — update a plan
-  - `PATCH /api/v1/admin/subscription/plans/:id/status` — activate or deactivate a plan (existing subscriptions keep their snapshotted terms)
-  - `GET /api/v1/admin/subscription/gyms?q=...` — search gyms by name/email/phone
-  - `GET /api/v1/admin/subscription/gyms/:gymId` — view a gym's subscription + payment + trial history
-  - `POST /api/v1/admin/subscription/gyms/:gymId/extend-trial` — extend a trial with reason (audited)
-  - `POST /api/v1/admin/subscription/gyms/:gymId/grant-access` — grant time-limited manual access with reason and expiry (audited)
-  - `GET /api/v1/admin/subscription/settings` — read trial/billing settings
-  - `PATCH /api/v1/admin/subscription/settings` — update trial duration, enabled status, cancellation policy, etc.
+- **Super-admin flow** (requires `SUPER_ADMIN`; create/promote with
+  `npm run bootstrap-super-admin`, never from client input)
+  - `GET /api/v1/super-admin/stats` — platform totals, revenue and recent activity
+  - `GET /api/v1/super-admin/gyms?q=...&status=...` — searchable cross-gym directory
+  - `GET /api/v1/super-admin/gyms/:gymId` — owner, subscription, payments, trials, audit log
+  - `POST /api/v1/super-admin/gyms/:gymId/plan` — assign or change a plan
+  - `POST /api/v1/super-admin/gyms/:gymId/extend-expiry` — extend a period or trial
+  - `POST /api/v1/super-admin/gyms/:gymId/trial` — start or extend a trial
+  - `POST /api/v1/super-admin/gyms/:gymId/trial/end` — end a trial immediately
+  - `PATCH /api/v1/super-admin/gyms/:gymId/access` — suspend or reactivate access
+  - `GET /api/v1/super-admin/plans` — plan catalog (read-only here)
+  - `GET /api/v1/super-admin/activity` — recent audit entries
+  - Legacy plan editing/settings remain at `/api/v1/admin/subscription/*`
 - **Security rules**
   - `gymId` is always derived from the authenticated session — never accepted from the request body
-  - Only `SUPER_ADMIN` can create/edit/deactivate plans; gym owners cannot change prices or entitlements
+  - Only `SUPER_ADMIN` can query across gyms, edit plans, or change entitlements; gym owners cannot
+  - Only `src/services/super-admin.service.js` performs cross-gym queries, and it re-checks the role on every call
+  - Every administrative mutation requires a reason and writes a `SubscriptionAuditLog` row in the same transaction
   - Existing subscriptions preserve their original price when a plan price changes
   - Deactivating a plan does not cancel existing subscriptions
   - Expired trials/paid subscriptions return `402 SUBSCRIPTION_REQUIRED` on protected gym-management routes
   - `CANCELLED` with `cancelAtPeriodEnd` keeps access until the period ends
+  - `SUSPENDED` blocks access immediately even if the paid period has not ended
 
 ---
 
@@ -1269,8 +1313,13 @@ Response (`200`):
 ---
 
 ### Super-admin: plan management
-All require the `SUPER_ADMIN` role (never assignable from client input;
-promote via `tsx scripts/make-super-admin.mjs <email>`).
+All require the `SUPER_ADMIN` role (never assignable from client input; create or
+promote via `npm run bootstrap-super-admin` — see
+[Authorization and bootstrap](#authorization-and-bootstrap)).
+
+> The dashboard, gym directory and subscription/access actions live at
+> `/api/v1/super-admin/*`. The endpoints in this section remain the canonical
+> place to create/edit plans and change platform settings.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1360,6 +1409,506 @@ period end retains access until `currentPeriodEnd`.
 
 ---
 
+## Platform administration (super admin)
+
+Dedicated platform-owner API mounted at `/api/v1/super-admin`. It is the only
+route group allowed to query across gyms. Every gym-scoped route still derives
+`gymId` from the authenticated session and cannot see another tenant.
+
+Frontend routes (static export):
+
+| Route | Purpose |
+|---|---|
+| `/super-admin` | Platform KPIs, revenue, plan mix, expiring gyms, recent activity |
+| `/super-admin/gyms` | Searchable/filterable cross-gym directory |
+| `/super-admin/gyms/details?gymId=...` | Gym detail, owner, billing history, actions |
+| `/super-admin/activity` | Administrative audit trail |
+
+### Authorization and bootstrap
+
+```js
+// src/routes/super-admin.route.js
+router.use(authenticate, requireSuperAdmin);
+```
+
+- `authenticate` loads `role` and `gymId` from the database on **every** request;
+  nothing is trusted from the client.
+- `requireSuperAdmin` returns `401` when no session exists and
+  `403 SUPER_ADMIN_REQUIRED` for gym owners (`ADMIN`), staff (`RECEPTIONIST`) or
+  any other role.
+- `src/services/super-admin.service.js` re-checks `actor.role === "SUPER_ADMIN"`
+  inside every exported function (defense in depth), so a service cannot be
+  reused by a gym route to leak cross-tenant data.
+- No endpoint in this group can change a user's `role` or `gymId`. Role
+  escalation is impossible through the API; the bootstrap script is the only
+  path.
+- `POST /api/v1/auth/setup-gym` returns
+  `403 SUPER_ADMIN_CANNOT_CREATE_GYM` for platform accounts.
+
+Create or promote the first administrator (see
+[setup step 5](#5-create-the-first-platform-administrator-one-time)):
+
+```bash
+SUPER_ADMIN_EMAIL=owner@platform.com \
+SUPER_ADMIN_PASSWORD='a-strong-12+-char-password' \
+SUPER_ADMIN_NAME='Platform Owner' \
+npm run bootstrap-super-admin
+
+# or promote an existing verified account
+npm run bootstrap-super-admin -- owner@platform.com
+```
+
+Sign in normally at `/login`; the client routes a `SUPER_ADMIN` to `/super-admin`
+and blocks `/dashboard` and `/setup-gym`. Use a cookie jar for the examples:
+
+```bash
+API=http://localhost:5000/api/v1
+
+curl -X POST $API/auth/login \
+  -H "Content-Type: application/json" \
+  -c admin-cookies.txt \
+  -d '{"email":"owner@platform.com","password":"a-strong-12+-char-password"}'
+
+curl $API/super-admin/stats -b admin-cookies.txt
+```
+
+All successful responses use the standard `{ "data": ... }` envelope. Errors are
+`{ "error": "...", "code": "...", "details": ... }` with no stack traces.
+
+### Dashboard and gym directory
+
+#### `GET /api/v1/super-admin/stats`
+
+Real database totals. Revenue is the sum of `SubscriptionPayment` rows with
+`status: "SUCCESS"` only — trial grants and manual plan assignments never
+create payment rows.
+
+```bash
+curl $API/super-admin/stats -b admin-cookies.txt
+```
+
+```json
+{
+  "data": {
+    "totalGyms": 128,
+    "activeSubscriptions": 84,
+    "trialGyms": 22,
+    "expiredSubscriptions": 17,
+    "suspendedGyms": 3,
+    "pastDueGyms": 2,
+    "noSubscriptionGyms": 0,
+    "subscriptionRevenuePaise": 1849200,
+    "monthlyRevenuePaise": 349700,
+    "successfulPayments": 96,
+    "monthlySuccessfulPayments": 12,
+    "planDistribution": [
+      { "planId": "plan_monthly", "planName": "Monthly", "count": 41 },
+      { "planId": null, "planName": "No plan / trial", "count": 22 }
+    ],
+    "expiringSoon": [
+      {
+        "gymId": "gym_x",
+        "gymName": "Downtown Fitness",
+        "status": "ACTIVE",
+        "effectiveStatus": "ACTIVE",
+        "planName": "Monthly",
+        "expiresAt": "2026-10-29T10:00:00.000Z",
+        "remainingDays": 4
+      }
+    ],
+    "recentGyms": [],
+    "recentActivity": [],
+    "generatedAt": "2026-10-25T09:00:00.000Z"
+  }
+}
+```
+
+`effectiveStatus` is derived from both the stored status and the real dates, so a
+lapsed period shows `EXPIRED` even before the background expiry job runs.
+
+#### `GET /api/v1/super-admin/gyms`
+
+Cross-gym directory with search and filters.
+
+| Query | Rules | Default |
+|---|---|---|
+| `q` | Minimum 2 characters. Matches gym name, gym ID, gym email/phone, or owner name/email/phone | — |
+| `status` | `ACTIVE` \| `TRIALING` \| `EXPIRED` \| `CANCELLED` \| `PAST_DUE` \| `SUSPENDED` \| `NO_SUBSCRIPTION` | all |
+| `planId` | Exact plan id | — |
+| `page` | ≥ 1 | `1` |
+| `limit` | 1–100 | `20` |
+| `sort` | `newest` \| `oldest` \| `name` | `newest` |
+
+```bash
+curl "$API/super-admin/gyms?q=downtown&status=ACTIVE&page=1&limit=20" \
+  -b admin-cookies.txt
+```
+
+```json
+{
+  "data": {
+    "gyms": [
+      {
+        "id": "gym_x",
+        "name": "Downtown Fitness",
+        "email": "hello@downtown.example",
+        "phone": "+919876543210",
+        "address": "12 MG Road",
+        "registeredAt": "2026-08-14T09:12:00.000Z",
+        "createdAt": "2026-08-14T09:12:00.000Z",
+        "owner": {
+          "id": "user_x",
+          "name": "Aarav Patel",
+          "email": "owner@example.com",
+          "phone": "+919876543210",
+          "emailVerified": true,
+          "createdAt": "2026-08-14T09:10:00.000Z"
+        },
+        "owners": [],
+        "effectiveStatus": "ACTIVE",
+        "expiryDate": "2026-11-14T09:12:00.000Z",
+        "memberCount": 412,
+        "staffCount": 3,
+        "subscription": {
+          "id": "sub_x",
+          "status": "ACTIVE",
+          "effectiveStatus": "ACTIVE",
+          "entitled": true,
+          "entitlementReason": "ACTIVE",
+          "plan": { "id": "plan_monthly", "name": "Monthly", "pricePaise": 49900 },
+          "planId": "plan_monthly",
+          "planNameSnapshot": "Monthly",
+          "pricePaise": 49900,
+          "currency": "INR",
+          "trialStartsAt": null,
+          "trialEndsAt": null,
+          "currentPeriodStart": "2026-10-14T09:12:00.000Z",
+          "currentPeriodEnd": "2026-11-14T09:12:00.000Z",
+          "expiresAt": "2026-11-14T09:12:00.000Z",
+          "remainingDays": 20,
+          "cancelAtPeriodEnd": false,
+          "cancelledAt": null,
+          "paymentProvider": "razorpay",
+          "createdAt": "2026-08-14T09:12:00.000Z",
+          "updatedAt": "2026-10-14T09:12:00.000Z"
+        }
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 },
+    "filters": { "q": "downtown", "status": "ACTIVE", "planId": null, "sort": "newest" }
+  }
+}
+```
+
+Search never returns another tenant's private records to a gym user, because
+this route is SUPER_ADMIN-only.
+
+#### `GET /api/v1/super-admin/gyms/:gymId`
+
+Full tenant view: gym, owners, staff summary, subscription, real payments, trial
+history and audit log. `404 GYM_NOT_FOUND` for an unknown id.
+
+```bash
+curl $API/super-admin/gyms/gym_x -b admin-cookies.txt
+```
+
+```json
+{
+  "data": {
+    "gym": {
+      "id": "gym_x",
+      "name": "Downtown Fitness",
+      "email": "hello@downtown.example",
+      "phone": "+919876543210",
+      "address": "12 MG Road",
+      "registeredAt": "2026-08-14T09:12:00.000Z",
+      "createdAt": "2026-08-14T09:12:00.000Z"
+    },
+    "owner": { "id": "user_x", "name": "Aarav Patel", "email": "owner@example.com" },
+    "owners": [],
+    "staff": [],
+    "effectiveStatus": "ACTIVE",
+    "subscription": { "id": "sub_x", "status": "ACTIVE", "expiresAt": "2026-11-14T09:12:00.000Z" },
+    "expiryDate": "2026-11-14T09:12:00.000Z",
+    "payments": [
+      {
+        "id": "pay_row_x",
+        "planId": "plan_monthly",
+        "subscriptionId": "sub_x",
+        "amountPaise": 49900,
+        "currency": "INR",
+        "status": "SUCCESS",
+        "provider": "razorpay",
+        "orderId": "order_x",
+        "paymentId": "pay_x",
+        "failureReason": null,
+        "verifiedAt": "2026-10-14T09:12:00.000Z",
+        "createdAt": "2026-10-14T09:11:00.000Z"
+      }
+    ],
+    "trialHistory": [
+      {
+        "id": "trial_x",
+        "type": "INITIAL",
+        "startsAt": "2026-08-14T09:12:00.000Z",
+        "endsAt": "2026-08-28T09:12:00.000Z",
+        "reason": "Signup trial",
+        "grantedById": null,
+        "grantedByRole": null,
+        "source": "SIGNUP",
+        "createdAt": "2026-08-14T09:12:00.000Z"
+      }
+    ],
+    "subscriptionHistory": [],
+    "auditLogs": [],
+    "stats": {
+      "members": 412,
+      "owners": 1,
+      "staff": 3,
+      "totalUsers": 4,
+      "attendanceRecords": 8123,
+      "membershipPlans": 5,
+      "activeMemberships": 318
+    }
+  }
+}
+```
+
+#### `GET /api/v1/super-admin/plans`
+
+Read-only plan catalog including inactive plans. Plan creation and editing remain
+on `/api/v1/admin/subscription/plans`.
+
+```bash
+curl $API/super-admin/plans -b admin-cookies.txt
+```
+
+#### `GET /api/v1/super-admin/activity?limit=50`
+
+Most recent `SubscriptionAuditLog` rows (1–100, default 20).
+
+```json
+{
+  "data": [
+    {
+      "id": "audit_x",
+      "action": "GYM_SUSPENDED",
+      "gymId": "gym_x",
+      "planId": "plan_monthly",
+      "subscriptionId": "sub_x",
+      "actorUserId": "user_admin",
+      "actorEmail": "owner@platform.com",
+      "actorRole": "SUPER_ADMIN",
+      "reason": "Chargeback investigation #4412",
+      "details": { "previousStatus": "ACTIVE" },
+      "createdAt": "2026-10-25T09:30:00.000Z"
+    }
+  ]
+}
+```
+
+### Subscription and access actions
+
+Common rules for all five mutations:
+
+- `reason` is **required** (3–500 characters) and is stored verbatim with the
+  actor id, email and role.
+- Every write runs inside a Prisma transaction with its audit row. A failure
+  leaves no partial subscription change.
+- Manual actions never create a `SubscriptionPayment` row. Revenue stays honest.
+- Rate limit: **60 mutation requests per hour per admin user**.
+- `404 GYM_NOT_FOUND` / `PLAN_NOT_FOUND` / `SUBSCRIPTION_NOT_FOUND` for missing rows.
+
+#### `POST /api/v1/super-admin/gyms/:gymId/plan`
+
+Assign or change the paid plan. Starts a fresh paid period from now unless an
+explicit future `expiresAt` is supplied. Creates the subscription if the gym has
+none. Audit action is `SUBSCRIPTION_PLAN_ASSIGNED` or
+`SUBSCRIPTION_PLAN_CHANGED`.
+
+```bash
+curl -X POST $API/super-admin/gyms/gym_x/plan \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{
+    "planId": "plan_annual",
+    "expiresAt": "2027-10-25T00:00:00.000Z",
+    "reason": "Annual plan paid offline, invoice #A-1042"
+  }'
+```
+
+```json
+{
+  "data": {
+    "subscription": {
+      "id": "sub_x",
+      "status": "ACTIVE",
+      "effectiveStatus": "ACTIVE",
+      "entitled": true,
+      "entitlementReason": "ACTIVE",
+      "planId": "plan_annual",
+      "planNameSnapshot": "Annual",
+      "pricePaise": 469900,
+      "currentPeriodStart": "2026-10-25T09:30:00.000Z",
+      "currentPeriodEnd": "2027-10-25T00:00:00.000Z",
+      "expiresAt": "2027-10-25T00:00:00.000Z",
+      "remainingDays": 365
+    }
+  },
+  "message": "Subscription plan assigned"
+}
+```
+
+`expiresAt` must be in the future (`400 INVALID_EXPIRY` otherwise). `planId` is
+validated server-side; the client never supplies a price.
+
+#### `POST /api/v1/super-admin/gyms/:gymId/extend-expiry`
+
+Extend a trial or paid period. Provide `additionalDays` (1–3650) **or**
+`expiresAt` (future date), not neither (`400 EXTENSION_REQUIRED`).
+
+```bash
+curl -X POST $API/super-admin/gyms/gym_x/extend-expiry \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"additionalDays": 7, "reason": "Outage goodwill credit"}'
+```
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x",
+    "status": "ACTIVE",
+    "expiresAt": "2026-11-21T09:12:00.000Z",
+    "previousExpiry": "2026-11-14T09:12:00.000Z",
+    "extendedByDays": 7
+  },
+  "message": "Subscription expiry updated"
+}
+```
+
+Behavior:
+
+- a trial in progress moves `trialEndsAt`;
+- an expired paid subscription becomes `ACTIVE` again;
+- a suspended subscription stays `SUSPENDED` until
+  `PATCH .../access` activates it;
+- the new expiry must be in the future (`400 INVALID_EXPIRY`).
+
+#### `POST /api/v1/super-admin/gyms/:gymId/trial`
+
+Start a trial or extend the current one. `days` defaults to 14 and must be an
+integer 1–365. An active paid subscription cannot be overwritten:
+`409 ACTIVE_SUBSCRIPTION_EXISTS` — suspend it or wait for expiry first.
+
+```bash
+curl -X POST $API/super-admin/gyms/gym_x/trial \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"days": 14, "reason": "Sales onboarding extension"}'
+```
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x",
+    "status": "TRIALING",
+    "trialStartsAt": "2026-10-25T09:30:00.000Z",
+    "trialEndsAt": "2026-11-08T09:30:00.000Z",
+    "extended": false
+  },
+  "message": "Trial started"
+}
+```
+
+Creates a `TrialRecord` (`INITIAL` or `EXTENSION`, `source: ADMIN_TRIAL`) and an
+audit row (`TRIAL_STARTED` / `TRIAL_EXTENDED`).
+
+#### `POST /api/v1/super-admin/gyms/:gymId/trial/end`
+
+End a trial immediately (`400 NOT_TRIALING` if the gym is not trialing).
+
+```bash
+curl -X POST $API/super-admin/gyms/gym_x/trial/end \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"reason": "Trial abuse — multiple accounts"}'
+```
+
+```json
+{
+  "data": {
+    "subscriptionId": "sub_x",
+    "status": "EXPIRED",
+    "trialEndsAt": "2026-10-25T09:35:00.000Z"
+  },
+  "message": "Trial ended"
+}
+```
+
+#### `PATCH /api/v1/super-admin/gyms/:gymId/access`
+
+Suspend or reactivate a gym. `status` must be `SUSPENDED` or `ACTIVE`.
+
+```bash
+# Suspend immediately, preserving billing dates
+curl -X PATCH $API/super-admin/gyms/gym_x/access \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"status": "SUSPENDED", "reason": "Chargeback investigation #4412"}'
+
+# Reactivate; expiresAt is required only when the paid period already ended
+curl -X PATCH $API/super-admin/gyms/gym_x/access \
+  -H "Content-Type: application/json" -b admin-cookies.txt \
+  -d '{"status": "ACTIVE", "expiresAt": "2026-11-24T00:00:00.000Z", "reason": "Investigation cleared"}'
+```
+
+Rules:
+
+- `SUSPENDED` sets the subscription status and `computeEntitlement` denies access
+  with reason `SUSPENDED`, even inside a paid period. Dates are preserved.
+- Activation of a still-valid paid period resumes access without changing the
+  expiry (`400 EXPIRY_REQUIRED` if the period ended and no `expiresAt` is given).
+- A gym in `TRIALING` must be converted with a plan or the trial endpoints;
+  activation returns `400 TRIAL_IN_PROGRESS`.
+- Audit actions: `GYM_SUSPENDED`, `GYM_ACTIVATED`.
+
+### Audit trail
+
+Every mutation writes `SubscriptionAuditLog` with `action`, `gymId`, `planId`,
+`subscriptionId`, `actorUserId`, `actorEmail`, `actorRole`, `reason`, `details`
+and `createdAt` in the same transaction as the change.
+
+| Action | Meaning |
+|---|---|
+| `SUBSCRIPTION_PLAN_ASSIGNED` | First paid plan assigned |
+| `SUBSCRIPTION_PLAN_CHANGED` | Existing plan replaced |
+| `SUBSCRIPTION_EXTENDED` | Paid expiry extended |
+| `TRIAL_STARTED` / `TRIAL_EXTENDED` / `TRIAL_ENDED` | Trial lifecycle |
+| `GYM_SUSPENDED` / `GYM_ACTIVATED` | Access control |
+
+`GET /api/v1/super-admin/activity` returns the newest entries across all gyms;
+`GET /api/v1/super-admin/gyms/:gymId` returns the newest entries for one gym.
+
+### Platform admin errors
+
+| Status | Code | Meaning |
+|---|---|---|
+| 400 | `REASON_REQUIRED` | Missing/short `reason` on a mutation |
+| 400 | `INVALID_EXPIRY` | `expiresAt` is not a future date |
+| 400 | `EXTENSION_REQUIRED` | Neither `additionalDays` nor `expiresAt` |
+| 400 | `INVALID_TRIAL_DAYS` | Trial days outside 1–365 |
+| 400 | `INVALID_ACCESS_STATUS` | Status not `ACTIVE`/`SUSPENDED` |
+| 400 | `EXPIRY_REQUIRED` | Activating an ended period without a new expiry |
+| 400 | `TRIAL_IN_PROGRESS` | Activating a trialing gym as a paid subscription |
+| 400 | `NOT_TRIALING` | Ending a trial on a non-trialing gym |
+| 401 | `Authentication required` | No/expired session |
+| 403 | `SUPER_ADMIN_REQUIRED` | Gym owner or staff calling any super-admin route |
+| 403 | `SUPER_ADMIN_CANNOT_CREATE_GYM` | Platform account calling `/auth/setup-gym` |
+| 404 | `GYM_NOT_FOUND`, `PLAN_NOT_FOUND`, `SUBSCRIPTION_NOT_FOUND` | Missing resources |
+| 409 | `ACTIVE_SUBSCRIPTION_EXISTS` | Starting a trial while a paid period is active |
+
+> `SubscriptionStatus` includes `SUSPENDED`. Apply migration
+> `20261025090000_add_suspended_subscription_status` with
+> `npx prisma migrate deploy` before deploying this API.
+
+---
+
 ## Subscription API usage guide
 
 Usage guide for the three subscription route groups mounted in `src/app.js`:
@@ -1417,11 +1966,12 @@ Better Auth session cookie — pass `-c cookies.txt -b cookies.txt` to cURL or
 | Other `/api/v1/subscription/*` | `authenticate` + `requireGym` + `requirePermission(MANAGE_SUBSCRIPTION)` | gym owner (`ADMIN`) only; `RECEPTIONIST` gets `403` |
 | `/api/v1/subscription/webhooks/razorpay` | HMAC signature only | Razorpay servers (no session) |
 | `/api/v1/admin/subscription/*` | `authenticate` + `requireSuperAdmin` | SUPER_ADMIN only — gym roles get `403 SUPER_ADMIN_REQUIRED` |
+| `/api/v1/super-admin/*` | `authenticate` + `requireSuperAdmin` | SUPER_ADMIN only; cross-gym queries live here |
 
 `gymId` is always derived from the authenticated session server-side — never
 from the request body — so a caller can never act on another gym. The `role`
-field is not assignable from client input; promote an admin out-of-band with
-`npx tsx scripts/make-super-admin.mjs admin@example.com`.
+field is not assignable from client input; create or promote a platform admin
+out-of-band with `npm run bootstrap-super-admin`.
 
 #### Success and error shape
 
@@ -1738,9 +2288,8 @@ generated secret into `RAZORPAY_WEBHOOK_SECRET`.
 
 Router: `src/routes/admin.subscription.route.js`. Every route runs
 `authenticate` + `requireSuperAdmin`; every mutation writes a
-`SubscriptionAuditLog` entry. Promote first with
-`npx tsx scripts/make-super-admin.mjs <email>` and use `admin-cookies.txt`
-for all calls below.
+`SubscriptionAuditLog` entry. Create or promote a platform admin first with
+`npm run bootstrap-super-admin` and use `admin-cookies.txt` for all calls below.
 
 #### GET /plans (admin)
 
@@ -2135,25 +2684,37 @@ curl -X POST $API/subscription/cancel \
 
 ---
 
-### 5. Super-admin (promote first, out of band)
+### 5. Super-admin (create the first account out of band)
+
+Create a verified platform owner, or promote an existing verified account:
 
 ```bash
-tsx scripts/make-super-admin.mjs superadmin@example.com
+SUPER_ADMIN_EMAIL=owner@platform.com \
+SUPER_ADMIN_PASSWORD='a-strong-12+-char-password' \
+SUPER_ADMIN_NAME='Platform Owner' \
+npm run bootstrap-super-admin
+
+# or promote an existing verified account
+npm run bootstrap-super-admin -- owner@platform.com
 ```
 
-Then use `admin-cookies.txt` for all `/api/v1/admin/subscription/*` endpoints. Every admin endpoint requires the `SUPER_ADMIN` role (gym OWNER/ADMIN/RECEPTIONIST are rejected).
+Then sign in and use `admin-cookies.txt` for every `/api/v1/super-admin/*`
+endpoint. Every endpoint in the group requires the `SUPER_ADMIN` role; gym
+`OWNER`/`ADMIN`/`RECEPTIONIST` sessions receive `403 SUPER_ADMIN_REQUIRED`.
 
 | Action | Example |
 |--------|---------|
-| List all plans (incl. inactive) | `GET /api/v1/admin/subscription/plans` |
-| Create plan | `POST /api/v1/admin/subscription/plans` `{code, name, pricePaise, durationMonths, ...}` |
-| Activate/deactivate plan | `PATCH /api/v1/admin/subscription/plans/:id/status` `{isActive: bool}` |
-| Search gyms | `GET /api/v1/admin/subscription/gyms?q=downtown&page=1&limit=20` |
-| View gym subscription + history | `GET /api/v1/admin/subscription/gyms/:gymId` |
-| Extend trial (audited) | `POST /api/v1/admin/subscription/gyms/:gymId/extend-trial` `{additionalDays, reason}` |
-| Grant manual access (audited) | `POST /api/v1/admin/subscription/gyms/:gymId/grant-access` `{expiresAt, reason}` |
-| Read settings | `GET /api/v1/admin/subscription/settings` |
-| Update settings | `PATCH /api/v1/admin/subscription/settings` `{trialDurationDays, trialEnabled, ...}` |
+| Platform stats + revenue | `GET /api/v1/super-admin/stats` |
+| Search / filter gyms | `GET /api/v1/super-admin/gyms?q=downtown&status=ACTIVE&page=1&limit=20` |
+| Gym subscription + history | `GET /api/v1/super-admin/gyms/:gymId` |
+| Assign or change plan | `POST /api/v1/super-admin/gyms/:gymId/plan` `{planId, expiresAt?, reason}` |
+| Extend expiry | `POST /api/v1/super-admin/gyms/:gymId/extend-expiry` `{additionalDays?, expiresAt?, reason}` |
+| Start / extend trial | `POST /api/v1/super-admin/gyms/:gymId/trial` `{days?, reason}` |
+| End trial now | `POST /api/v1/super-admin/gyms/:gymId/trial/end` `{reason}` |
+| Suspend / activate access | `PATCH /api/v1/super-admin/gyms/:gymId/access` `{status, expiresAt?, reason}` |
+| Read plans (incl. inactive) | `GET /api/v1/super-admin/plans` |
+| Read audit trail | `GET /api/v1/super-admin/activity?limit=50` |
+| Create / edit plans and settings | Legacy `/api/v1/admin/subscription/*` (still supported) |
 
 Example — extend a trial:
 ```bash
@@ -2217,9 +2778,9 @@ A `CANCELLED` subscription with `cancelAtPeriodEnd: true` keeps access until `cu
 npm test
 ```
 
-Covers trial eligibility, concurrency-safe duplicate-trial prevention, plan super-admin permissions, tenant isolation, checkout using DB price, and server-side expiry/entitlement calculation.
+Covers trial eligibility, concurrency-safe duplicate-trial prevention, plan super-admin permissions, tenant isolation, checkout using DB price, server-side expiry/entitlement calculation, and the `/api/v1/super-admin` authorization, isolation, stats, plan/extend/trial/suspension flows.
 
-Expected: `✔ pass 25  ✔ fail 0`.
+Expected: `✔ pass 66  ✔ fail 0`.
 
 ---
 
