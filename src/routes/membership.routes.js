@@ -4,6 +4,8 @@ import {
   authenticate,
   requireGym,
   allowReadAndCreateOnly,
+  requirePermission,
+  PERMISSION,
 } from "../middleware/auth.js";
 import { requireActiveSubscription } from "../middleware/subscription.js";
 
@@ -12,7 +14,9 @@ router.use(authenticate, requireGym, allowReadAndCreateOnly, requireActiveSubscr
 
 router.get("/", listMemberships);
 router.post("/", createMembership);
-router.post("/:id/freeze", freezeMembership);
-router.post("/:id/cancel", cancelMembership);
+// These are POSTs but they modify an existing membership, so they need the
+// update capability. Staff (RECEPTIONIST) therefore cannot freeze or cancel.
+router.post("/:id/freeze", requirePermission(PERMISSION.UPDATE), freezeMembership);
+router.post("/:id/cancel", requirePermission(PERMISSION.UPDATE), cancelMembership);
 
 export default router;

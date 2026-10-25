@@ -53,7 +53,7 @@ app.use(
 );
 
 app.use(cors({ 
-  origin: clientOrigins, 
+  origin: clientOrigins , 
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
    credentials: true,
 }));

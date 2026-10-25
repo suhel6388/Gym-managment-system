@@ -43,7 +43,7 @@ export function parseOrigins(value?: string | null): string[] {
  */
 export function getClientOrigins(env: AuthEnv = process.env): string[] {
   const configured = parseOrigins(env.CLIENT_ORIGIN);
-  return configured.length > 0 ? configured : ["https://client-gym-iota.vercel.app/"];
+  return configured.length > 0 ? configured : ["http://localhost:3000"];
 }
 
 /** True when the URL points at a loopback host (local development). */

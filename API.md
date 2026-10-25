@@ -30,7 +30,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [Attendance errors](#attendance-errors)
 - [Expenses](#expenses)
 - [Staff and receptionists](#staff-and-receptionists)
+  - [Staff login](#staff-login)
 - [Role permissions](#role-permissions)
+  - [Gym data isolation (`gymId`)](#gym-data-isolation-gymid)
 - [Dashboard and reports](#dashboard-and-reports)
   - [`GET /api/v1/reports/dashboard`](#get-apiv1reportsdashboard)
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
@@ -771,7 +773,7 @@ Counts are scoped to the gym and the current UTC day.
 
 ## Expenses
 
-All expense routes require an authenticated user with a gym. Deleting additionally requires the `OWNER`, `ADMIN`, or `ACCOUNTANT` role.
+All expense routes require an authenticated user with a gym. Creating is allowed for staff; `PATCH` and `DELETE` are owner-only (`ADMIN`), so a `RECEPTIONIST` gets `403`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -796,19 +798,19 @@ The current request validator accepts these fields:
 
 ## Staff and receptionists
 
-A gym `ADMIN` can create login accounts for reception staff. Receptionists belong to the same gym and can sign in with the normal login endpoint.
+A gym owner (`ADMIN`) can create login accounts for reception staff. Staff accounts are stored with `role: "RECEPTIONIST"` and the owner's `gymId`, so they can only ever see that gym's data. Staff sign in with the normal login endpoint and use the same dashboard routes as the owner, minus every update/delete operation.
 
 | Method | Path | Who | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/staff/receptionists` | `ADMIN` only | Create a receptionist login |
-| `GET` | `/api/v1/staff/receptionists` | `ADMIN` only | List staff in your gym |
-| `DELETE` | `/api/v1/staff/receptionists/:id` | `ADMIN` only | Remove a receptionist |
+| `POST` | `/api/v1/staff/receptionists` | Owner (`ADMIN`) only | Create a staff login |
+| `GET` | `/api/v1/staff/receptionists` | Owner (`ADMIN`) only | List staff in your gym |
+| `DELETE` | `/api/v1/staff/receptionists/:id` | Owner (`ADMIN`) only | Remove a staff account |
 
-All three routes need an authenticated session with a gym (`credentials: "include"`). A `RECEPTIONIST` calling them gets `403`.
+All three routes need an authenticated session with a gym (`credentials: "include"`). A `RECEPTIONIST` calling them gets `403`; the guard is `requirePermission(PERMISSION.MANAGE_STAFF)` in `src/routes/staff.route.js`.
 
 ### `POST /api/v1/staff/receptionists`
 
-Create the account, then the receptionist logs in with `POST /api/v1/auth/login` like anyone else. No OTP step — the account is ready immediately.
+Create the account, then the staff member logs in with `POST /api/v1/auth/login` like anyone else. No OTP step — the account is created already verified and can sign in immediately.
 
 ```json
 {
@@ -820,6 +822,7 @@ Create the account, then the receptionist logs in with `POST /api/v1/auth/login`
 ```
 
 - `name` 2–100 chars, valid `email`, `password` 8–128 chars, `phone` optional (10–16 digits).
+- `gymId` is taken from the owner's session and cannot be supplied in the body.
 - Success (`201`):
 
 ```json
@@ -838,29 +841,64 @@ Create the account, then the receptionist logs in with `POST /api/v1/auth/login`
 ```
 
 - Duplicate email/phone returns `409`.
-- Non-admin callers get `403`.
+- Non-owner callers get `403`.
+- The password hash is never returned, and the staff account's session cookie is not forwarded to the owner.
+
+### Staff login
+
+Staff use the same endpoint and cookie flow as owners. The session response includes the role, and `GET /api/v1/auth/me` returns it too, so the frontend can hide write actions for `RECEPTIONIST`.
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "desk@example.com",
+  "password": "password123"
+}
+```
+
+Success (`200`) sets the session cookie and returns the Better Auth session:
+
+```json
+{
+  "token": "session-token",
+  "user": {
+    "id": "user-id",
+    "name": "Front Desk",
+    "email": "desk@example.com",
+    "role": "RECEPTIONIST",
+    "gymId": "gym-id",
+    "emailVerified": true
+  }
+}
+```
+
+Invalid credentials return `401` with `{ "error": "Invalid email or password" }`.
 
 ```bash
-# 1. Admin creates the receptionist (admin cookies)
+# 1. Owner creates the staff account (owner cookies)
 curl -X POST http://localhost:5000/api/v1/staff/receptionists \
   -H "Content-Type: application/json" \
   -b admin-cookies.txt \
   -d '{"name":"Front Desk","email":"desk@example.com","password":"password123"}'
 
-# 2. Receptionist logs in (own cookie jar)
+# 2. Staff logs in (own cookie jar)
 curl -X POST http://localhost:5000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -c desk-cookies.txt \
   -d '{"email":"desk@example.com","password":"password123"}'
 
-# 3. Receptionist daily work: allowed (GET + POST)
+# 3. Staff daily work: allowed (GET + POST)
 curl http://localhost:5000/api/v1/members -b desk-cookies.txt
 curl -X POST http://localhost:5000/api/v1/attendence/check-in \
   -H "Content-Type: application/json" \
   -b desk-cookies.txt \
   -d '{"memberId":"member-id","attendanceDate":"2026-10-16"}'
 
-# 4. Blocked for receptionists (403)
+# 4. Blocked for staff (403)
 curl -X PATCH http://localhost:5000/api/v1/members/some-id \
   -H "Content-Type: application/json" \
   -b desk-cookies.txt \
@@ -868,10 +906,10 @@ curl -X PATCH http://localhost:5000/api/v1/members/some-id \
 ```
 
 ```js
-// Admin creates a receptionist
+// Owner creates a staff account
 const res = await fetch(`${API_BASE}/staff/receptionists`, {
   method: "POST",
-  credentials: "include", // admin session
+  credentials: "include", // owner session
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ name: "Front Desk", email: "desk@example.com", password: "password123" })
 });
@@ -880,27 +918,65 @@ const { data } = await res.json(); // data.role === "RECEPTIONIST"
 
 ### `GET /api/v1/staff/receptionists`
 
-Returns `{ "data": [...] }` with `{ id, name, email, phone, role, gymId, createdAt }` per staff member, newest first.
+Returns `{ "data": [...] }` with `{ id, name, email, phone, role, gymId, createdAt }` per staff member, newest first. The query is scoped to `req.user.gymId`, so it never returns another gym's users.
 
 ### `DELETE /api/v1/staff/receptionists/:id`
 
-Removes a `RECEPTIONIST`. Returns `{ "message": "Receptionist removed" }`. Admins cannot delete themselves or other admins (`400`/`403`); unknown ids return `404`.
+Removes a `RECEPTIONIST` from the owner's gym. Returns `{ "message": "Receptionist removed" }`. Admins cannot delete themselves or other admins (`400`/`403`); unknown ids, or ids belonging to another gym, return `404`.
 
 ## Role permissions
 
-| Capability | `ADMIN` | `RECEPTIONIST` |
+| Capability | `ADMIN` (owner) | `RECEPTIONIST` (staff) |
 |---|---|---|
 | `GET` any gym data (members, plans, attendance, payments, expenses, reports) | Yes | Yes |
-| `POST` (add member, check-in/out, create payment, membership, expense, plan) | Yes | Yes |
-| `PATCH` / `PUT` (edit any record) | Yes | No — `403` |
-| `DELETE` (archive member, deactivate plan, delete expense, remove receptionist) | Yes | No — `403` |
+| `POST` create records (add member, create payment, membership, expense, plan, check-in/out) | Yes | Yes |
+| `PATCH` / `PUT` edit an existing record | Yes | No — `403` |
+| `DELETE` (archive member, deactivate plan, delete expense) | Yes | No — `403` |
+| Freeze / cancel a membership (`POST /memberships/:id/*` changes an existing row) | Yes | No — `403` |
 | Manage staff (`/api/v1/staff/*`) | Yes | No — `403` |
+| Manage billing (`/subscription/trial`, `/checkout`, `/verify`, `/cancel`, `/history`) | Yes | No — `403` |
+| Read subscription status (`GET /subscription/me`) | Yes | Yes |
 
-The rule lives in one place — `allowReadAndCreateOnly` in `src/middleware/auth.js` — and is applied to the member, plan, membership, payment, expense, and report routers. Enforcement is by HTTP method, so any future `PATCH`/`DELETE` added to those routers is blocked automatically.
+> **Attendance check-out note:** `POST /attendence/check-out` closes the session that check-in opened. It is treated as part of the attendance workflow (like check-in) rather than a general record edit. Staff still cannot `PATCH`/`DELETE` attendance rows, and every other update/delete on members, plans, memberships, payments, expenses, and staff accounts is owner-only.
+
+The rules live in `src/middleware/permissions.js`:
+
+- `ROLE_PERMISSIONS` maps each role to `records:read`, `records:create`, `records:update`, `records:delete`, `staff:manage`, and `subscription:manage`.
+- `allowReadAndCreateOnly` enforces the staff rule by HTTP method and is applied to the member, plan, membership, payment, expense, report, and attendance routers.
+- `requirePermission(...)` guards endpoints whose method does not describe the change (membership freeze/cancel, staff management, billing).
+- `authenticate` loads `role` and `gymId` from the database on every request — never from the request body — and rejects stale sessions with `401`.
 
 ```json
-{ "error": "Receptionists can only view (GET) and add (POST) data" }
+{
+  "error": "Receptionists can only view (GET) and add (POST) data",
+  "code": "FORBIDDEN",
+  "requiredPermission": "records:update"
+}
 ```
+
+### Gym data isolation (`gymId`)
+
+Every gym-data query is scoped by the `gymId` stored on the authenticated user. The client cannot override it:
+
+- `authenticate` / `requireAuth` set `req.user.gymId` from `User.gymId`.
+- List, aggregate, and report queries use `where: { gymId: req.user.gymId }`.
+- Create operations write `gymId: req.user.gymId`, ignoring any body value.
+- Updates and deletes use `findFirst`/`updateMany`/`deleteMany` with both the record id **and** `gymId`, so a guessed id from another gym behaves as not found.
+- Staff records are additionally constrained to `role: RECEPTIONIST` and the owner's gym.
+
+Example — staff in gym A requesting a member id that belongs to gym B:
+
+```http
+PATCH /api/v1/members/member-from-gym-b
+```
+
+```json
+{ "error": "Member not found" }
+```
+
+Status: `404` (not `403`), so the API does not reveal that the record exists in another gym.
+
+Attendance uses the same rule through `requireAuth`, which sets `req.gymId` from the user row; the attendance service filters every query by that value.
 
 ## Dashboard and reports
 
@@ -1337,7 +1413,8 @@ Better Auth session cookie — pass `-c cookies.txt -b cookies.txt` to cURL or
 | Route group | Middleware | Who can call |
 |---|---|---|
 | `GET /api/v1/subscription/plans` | none | anyone (public catalog) |
-| Other `/api/v1/subscription/*` | `authenticate` + `requireGym` | gym OWNER / ADMIN / RECEPTIONIST |
+| `GET /api/v1/subscription/me` | `authenticate` + `requireGym` | any gym member (owner or staff) — read-only status |
+| Other `/api/v1/subscription/*` | `authenticate` + `requireGym` + `requirePermission(MANAGE_SUBSCRIPTION)` | gym owner (`ADMIN`) only; `RECEPTIONIST` gets `403` |
 | `/api/v1/subscription/webhooks/razorpay` | HMAC signature only | Razorpay servers (no session) |
 | `/api/v1/admin/subscription/*` | `authenticate` + `requireSuperAdmin` | SUPER_ADMIN only — gym roles get `403 SUPER_ADMIN_REQUIRED` |
 

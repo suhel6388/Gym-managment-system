@@ -2,6 +2,7 @@ import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
+import { ROLE } from "../middleware/permissions.js";
 
 // Validation for the receptionist account the admin wants to create.
 const createReceptionistSchema = z.object({
@@ -28,6 +29,7 @@ function toPublicUser(user) {
 // Creates a login for a receptionist inside the admin's gym.
 // The receptionist can sign in right away — no OTP step.
 export async function createReceptionist(req, res, next) {
+  let newUserId = null;
   try {
     const input = createReceptionistSchema.parse(req.body);
 
@@ -69,7 +71,16 @@ export async function createReceptionist(req, res, next) {
     }
 
     const signupBody = await signupResponse.json().catch(() => null);
-    const newUserId = signupBody?.user?.id;
+    newUserId = signupBody?.user?.id ?? null;
+    if (!newUserId) {
+      // The account may have been created even if the body was unreadable.
+      // Recover it by email so it is never left detached from the gym.
+      const created = await prisma.user.findUnique({
+        where: { email: input.email },
+        select: { id: true },
+      });
+      newUserId = created?.id ?? null;
+    }
     if (!newUserId) {
       return res.status(500).json({ error: "Account created but user id is missing" });
     }
@@ -80,7 +91,7 @@ export async function createReceptionist(req, res, next) {
       where: { id: newUserId },
       data: {
         gymId: req.user.gymId,
-        role: "RECEPTIONIST",
+        role: ROLE.STAFF,
         emailVerified: true,
       },
     });
@@ -90,6 +101,12 @@ export async function createReceptionist(req, res, next) {
       data: toPublicUser(user),
     });
   } catch (err) {
+    // If the auth account was created but attaching it to the gym failed, remove
+    // it so the owner can retry with the same email. Without this cleanup the
+    // global unique email would permanently block the retry.
+    if (newUserId) {
+      await prisma.user.delete({ where: { id: newUserId } }).catch(() => {});
+    }
     if (err?.name === "ZodError") {
       return res.status(400).json({ error: err.issues?.[0]?.message ?? "Validation failed" });
     }
@@ -138,7 +155,7 @@ export async function deleteReceptionist(req, res, next) {
     if (target.id === req.user.id) {
       return res.status(400).json({ error: "You cannot delete your own account" });
     }
-    if (target.role !== "RECEPTIONIST") {
+    if (target.role !== ROLE.STAFF) {
       return res.status(403).json({ error: "Only RECEPTIONIST accounts can be deleted here" });
     }
 

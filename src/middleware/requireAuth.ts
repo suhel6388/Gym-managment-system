@@ -7,6 +7,14 @@ import { prisma } from "../lib/prisma";
 export interface AuthRequest extends Request {
   authUserId?: string;
   gymId?: string;
+  // Same shape as `authenticate` (src/middleware/auth.js) so shared
+  // role/permission middleware works on attendance routes too.
+  user?: {
+    id: string;
+    gymId: string | null;
+    role: string;
+    email?: string;
+  };
 }
 
 export async function requireAuth(
@@ -31,6 +39,8 @@ export async function requireAuth(
       select: {
         id: true,
         gymId: true,
+        role: true,
+        email: true,
         emailVerified: true,
       },
     });
@@ -55,6 +65,12 @@ export async function requireAuth(
 
     req.authUserId = user.id;
     req.gymId = user.gymId;
+    req.user = {
+      id: user.id,
+      gymId: user.gymId,
+      role: user.role,
+      email: user.email ?? session.user.email,
+    };
 
     next();
   } catch (error) {
