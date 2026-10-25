@@ -73,6 +73,7 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 | `SUPER_ADMIN_EMAIL` | Bootstrap only | Email for the one-time platform-owner bootstrap. Never read by the running API. |
 | `SUPER_ADMIN_PASSWORD` | Bootstrap only | New-account password, minimum 12 characters. Required when creating; ignored when promoting an existing account. |
 | `SUPER_ADMIN_NAME` | Bootstrap only | Display name for a newly created platform owner (default `Platform Owner`). |
+| `SUPER_ADMIN_BOOTSTRAP_SECRET` | No | Shared secret for `POST /api/v1/auth/bootstrap-super-admin`. When set, that endpoint requires a matching `x-bootstrap-secret` header. When unset, the endpoint still works in first-run mode (only while no `SUPER_ADMIN` exists). |
 
 ### 3. Install, migrate, run
 
@@ -128,6 +129,14 @@ Environment variables can also be placed in `.env`. The script:
 - is the only supported way to grant platform privileges. Signing in at
   `/login` sends a `SUPER_ADMIN` to `/super-admin`.
 
+The same first account can be created over HTTP, without database access, via
+`POST /api/v1/auth/bootstrap-super-admin` (see the endpoint reference below).
+It accepts only `name`, `email` and `password`, marks the account verified, and
+stops working (`409 SUPER_ADMIN_ALREADY_EXISTS`) once a platform administrator
+exists. Set `SUPER_ADMIN_BOOTSTRAP_SECRET` and send `x-bootstrap-secret` to
+require a shared secret while that window is still open. Either way, sign in
+afterwards through the normal `POST /api/v1/auth/login`.
+
 ### 6. Recommended frontend integration order
 
 1. `POST /api/v1/auth/signup` → read the OTP from the user's email (or the backend console in dev). If the response has `requiresEmailVerification: true`, the email already existed unverified and a new OTP was sent — go straight to step 2.
@@ -168,6 +177,7 @@ Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`S
 | `POST` | `/api/v1/auth/verify-email` | Verify the OTP (also signs the user in) |
 | `POST` | `/api/v1/auth/resend-otp` | Send a fresh OTP |
 | `POST` | `/api/v1/auth/google` | Start Google sign-in (returns the Google URL to redirect to) |
+| `POST` | `/api/v1/auth/bootstrap-super-admin` | One-time platform-owner creation/promotion; `409` once a `SUPER_ADMIN` exists |
 | `POST` | `/api/v1/auth/login` | Sign in with email and password (requires a verified email) |
 | `POST` | `/api/v1/auth/logout` | Sign out (clears the session cookie) |
 | `GET` | `/api/v1/auth/me` | Current user + gym info (`401` when signed out) |
@@ -291,6 +301,66 @@ window.location.href = url; // Google consent -> back to callbackURL with a sess
 - The Vercel frontend and Render API are different sites. The backend sets
   `SameSite=None; Secure` cookies automatically for that layout; see
   `DEPLOYMENT.md` for browser third-party-cookie caveats.
+
+### `POST /api/v1/auth/bootstrap-super-admin`
+
+One-time creation (or promotion) of the platform owner. This is the HTTP
+equivalent of `npm run bootstrap-super-admin`; it is **not** a general
+registration route and stops working once a `SUPER_ADMIN` exists.
+
+```json
+{
+  "name": "Platform Owner",
+  "email": "owner@platform.com",
+  "password": "a-strong-12+-char-password"
+}
+```
+
+- `name` 2–100 characters, `email` must be valid, `password` 12–128 characters.
+  Any `role` field is ignored — the account is always `SUPER_ADMIN`.
+- Success (`201`):
+  ```json
+  {
+    "message": "Platform administrator created. Sign in with the password you supplied.",
+    "promoted": false,
+    "user": {
+      "id": "...",
+      "name": "Platform Owner",
+      "email": "owner@platform.com",
+      "role": "SUPER_ADMIN",
+      "emailVerified": true,
+      "gymId": null
+    },
+    "login": { "method": "POST", "path": "/api/v1/auth/login", "body": { "...": "..." } }
+  }
+  ```
+  The account is created already verified with `gymId: null`, so no OTP email is
+  needed and `POST /api/v1/auth/login` works immediately. There is no separate
+  login change: login already returns `role`, and the client routes
+  `SUPER_ADMIN` to `/super-admin`.
+- If the email already exists and belongs to no gym, that account is promoted:
+  `role` becomes `SUPER_ADMIN`, `emailVerified` becomes `true`, the name is
+  updated and the password is set to the one supplied (`promoted: true`).
+- `409 SUPER_ADMIN_ALREADY_EXISTS` — a platform administrator already exists.
+  Use the CLI script for additional platform owners.
+- `409 ACCOUNT_BELONGS_TO_GYM` — the email is already a gym user. Platform
+  administrators must be separate accounts.
+- `401 BOOTSTRAP_SECRET_REQUIRED` — `SUPER_ADMIN_BOOTSTRAP_SECRET` is set and the
+  `x-bootstrap-secret` header is missing or wrong. When the variable is unset the
+  endpoint runs in first-run mode, still limited to the "no `SUPER_ADMIN` yet"
+  window.
+- Limited to 5 attempts per 15 minutes per IP (`429 RATE_LIMITED`).
+
+```bash
+curl -X POST http://localhost:5000/api/v1/auth/bootstrap-super-admin \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Platform Owner","email":"owner@platform.com","password":"a-strong-12+-char-password"}'
+
+# Then use the normal login endpoint:
+curl -X POST http://localhost:5000/api/v1/auth/login \
+  -H "Content-Type: application/json" -c cookies.txt \
+  -d '{"email":"owner@platform.com","password":"a-strong-12+-char-password"}'
+```
 
 ### `POST /api/v1/auth/login`
 
