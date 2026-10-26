@@ -446,7 +446,7 @@ model ScheduleCall {
   clientName String
   Mob        String @db.VarChar(13)
   callTime   DateTime
-  note       String   @db.VarChar(50)
+  note       String?  @db.VarChar(50)
   ipAddress  String
   createdAt  DateTime @default(now())
 

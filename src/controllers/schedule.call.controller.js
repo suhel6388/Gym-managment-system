@@ -1,11 +1,25 @@
 import { prisma } from "../db.js";
 
 
-export async function AddCall(req, res, next){
-try {
-    
-    const { clientName, mob, callTime, note, ipAddress  } = req.body;
-      if (
+/**
+ * Resolve the visitor's address on the server. `req.ip` already respects the
+ * `trust proxy` setting in `app.js`; the socket address is only a fallback.
+ * IPv4-mapped IPv6 addresses are normalized for readable storage.
+ */
+function getClientIp(req) {
+  const raw = req.ip || req.socket?.remoteAddress || "";
+  const first = raw.split(",")[0].trim();
+  const normalized = first.startsWith("::ffff:") ? first.slice(7) : first;
+
+  if (normalized === "::1") return "127.0.0.1";
+  return normalized;
+}
+
+export async function AddCall(req, res, next) {
+  try {
+    const { clientName, mob, callTime, note } = req.body ?? {};
+
+    if (
       typeof clientName !== "string" ||
       !clientName.trim() ||
       clientName.trim().length > 40
@@ -15,18 +29,21 @@ try {
         message: "Client name is required (maximum 40 characters)",
       });
     }
-      else if (
-      typeof mob !== "string" ||
-      !mob.trim() ||
-      mob.trim().length > 13
+
+    const normalizedMob =
+      typeof mob === "string" ? mob.trim().replace(/[\s()-]/g, "") : "";
+
+    if (
+      !/^\+?\d{10,13}$/.test(normalizedMob) ||
+      normalizedMob.length > 13
     ) {
       return res.status(400).json({
         success: false,
-        message: "Client Mobile Number is required (maximum 13 characters)",
+        message: "A valid mobile number is required (10–13 digits, optional +)",
       });
     }
 
-      else if(
+    if (
       typeof callTime !== "string" ||
       !callTime.trim() ||
       !Number.isFinite(Date.parse(callTime))
@@ -36,10 +53,19 @@ try {
         message: "A valid callTime is required",
       });
     }
-     else if (
+
+    const parsedCallTime = new Date(callTime);
+    if (parsedCallTime.getTime() <= Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: "callTime must be in the future",
+      });
+    }
+
+    if (
       note !== undefined &&
       note !== null &&
-      (typeof note !== "string" || note.length > 50)
+      (typeof note !== "string" || note.trim().length > 50)
     ) {
       return res.status(400).json({
         success: false,
@@ -47,18 +73,15 @@ try {
       });
     }
 
-     // Express must be configured correctly behind any reverse proxy.
-    const forwarded = req.headers["x-forwarded-for"];
-    const ipAdd = req.ip;
-
+    // The client never supplies this value. Express derives it from the
+    // connection / trusted proxy headers, so it cannot be spoofed in the body.
+    const ipAddress = getClientIp(req);
     if (!ipAddress) {
       return res.status(400).json({
         success: false,
         message: "Unable to identify client IP",
       });
     }
-
-    
 
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
@@ -70,10 +93,9 @@ try {
       orderBy: { createdAt: "desc" },
     });
 
-
     if (recentCall) {
       const nextAllowedAt = new Date(
-        recentCall.createdAt.getTime() + 24 * 60 * 60 * 1000
+        recentCall.createdAt.getTime() + 24 * 60 * 60 * 1000,
       );
 
       return res.status(429).json({
@@ -83,32 +105,29 @@ try {
       });
     }
 
-      const call = await prisma.scheduleCall.create({
+    const call = await prisma.scheduleCall.create({
       data: {
         clientName: clientName.trim(),
-        Mob:mob.trim(),
-        callTime: new Date(callTime),
+        Mob: normalizedMob,
+        callTime: parsedCallTime,
         note: note?.trim() || null,
-        ipAddress:ipAdd,
+        ipAddress,
       },
     });
-        return res.status(201).json({
+
+    return res.status(201).json({
       success: true,
       message: "Call scheduled successfully",
       data: call,
     });
-
-
-} catch (error) {
-      console.error("Schedule call error:", error);
+  } catch (error) {
+    console.error("Schedule call error:", error);
 
     return res.status(500).json({
       success: false,
       message: "Failed to schedule call",
     });
-    
-}
-
+  }
 }
 
 

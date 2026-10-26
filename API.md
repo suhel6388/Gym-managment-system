@@ -35,8 +35,8 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 - [Staff and receptionists](#staff-and-receptionists)
   - [Staff login](#staff-login)
 - [Schedule Call API](#schedule-call-api)
-  - [Create a scheduled call](#create-a-scheduled-call-get-apiv1schedule)
-  - [List all scheduled calls](#list-all-scheduled-calls-post-apiv1schedule)
+  - [Create a scheduled call](#create-a-scheduled-call-post-apiv1schedule)
+  - [List all scheduled calls](#list-all-scheduled-calls-get-apiv1schedule)
   - [Update a scheduled call](#update-a-scheduled-call-patch-apiv1scheduleid)
   - [Delete a scheduled call](#delete-a-scheduled-call-delete-apiv1scheduleid)
 - [Role permissions](#role-permissions)
@@ -1157,19 +1157,17 @@ app.use("/api/v1/schedule", scheduleCallRoutes)
 
 | Method | Path | Handler | Auth | Description |
 |---|---|---|---|---|
-| `GET` | `/api/v1/schedule/` | `AddCall` | none | Create a new scheduled call (request body required) |
-| `POST` | `/api/v1/schedule/` | `GetAllCall` | `requireSuperAdmin` | List all scheduled calls |
-| `PATCH` | `/api/v1/schedule/` | `PatchCall` | `authenticate` + `requireSuperAdmin` | Update a scheduled call by ID |
-| `DELETE` | `/api/v1/schedule/` | `DeleteCall` | `authenticate` + `requireSuperAdmin` | Delete a scheduled call by ID |
+| `POST` | `/api/v1/schedule/` | `AddCall` | none | Create a new scheduled call (request body required) |
+| `GET` | `/api/v1/schedule/` | `GetAllCall` | `authenticate` + `requireSuperAdmin` | List all scheduled calls |
+| `PATCH` | `/api/v1/schedule/:id` | `PatchCall` | `authenticate` + `requireSuperAdmin` | Update a scheduled call by ID |
+| `DELETE` | `/api/v1/schedule/:id` | `DeleteCall` | `authenticate` + `requireSuperAdmin` | Delete a scheduled call by ID |
 
-> **Mounting notes**
-> - `GET` creates a call and `POST` lists them — the handler names are swapped relative to HTTP convention in `src/routes/scheduleCall.route.js`.
-> - `PATCH` and `DELETE` read the target call id from `req.params.id`, but the route is mounted at `/` without `:id`. As mounted, `req.params.id` is `undefined`, so update/delete return `400 { "success": false, "message": "Invalid call ID" }`. To use them, mount with `:id` (e.g. `router.patch("/:id", ...)`) and call `/api/v1/schedule/<callId>`.
-> - POST applies only `requireSuperAdmin` (not `authenticate`), so `req.user` is never populated and the endpoint currently returns `403 SUPER_ADMIN_REQUIRED` for every call until `authenticate` is added to the chain in `src/routes/scheduleCall.route.js`.
+> **IP address:** the create endpoint never accepts `ipAddress` from the client. The server resolves it from the connection (respecting the one trusted proxy hop configured with `app.set("trust proxy", 1)`) and stores that value. The same detected address is used for the 24-hour rate limit, so a forged body cannot bypass it.
+
 
 ### Create a scheduled call
 
-#### `GET /api/v1/schedule/`
+#### `POST /api/v1/schedule/`
 
 Handler: `AddCall` (`src/controllers/schedule.call.controller.js`). No session is required.
 
@@ -1178,12 +1176,12 @@ Request body:
 | Field | Type | Required | Rules |
 |---|---|---|---|
 | `clientName` | string | Yes | Trimmed, 1–40 characters |
-| `mob` | string | Yes | Trimmed, 1–13 characters |
-| `callTime` | string | Yes | Must be a parseable date (`Date.parse` returns a finite number) |
-| `note` | string | No | Max 50 characters; `null` allowed |
-| `ipAddress` | string | Yes | Any non-empty value passes the check; the IP actually stored is `req.ip` detected by Express |
+| `mob` | string | Yes | Trimmed; 10–13 digits with an optional leading `+` (max 13 characters) |
+| `callTime` | string | Yes | Valid ISO 8601 date-time in the future (`Date.parse` must succeed) |
+| `note` | string or null | No | Max 50 characters; omitted, `null` and `""` are stored as `null` |
+| `ipAddress` | — | No | **Do not send.** The server determines and stores the client IP. |
 
-Rate limit: at most **one scheduled call per IP per 24 hours**. A recent call for the same `req.ip` returns `429`:
+Rate limit: at most **one scheduled call per detected client IP per 24 hours**. A recent call for the same IP returns `429`:
 
 ```json
 {
@@ -1200,8 +1198,7 @@ Example body:
   "clientName": "Rahul Sharma",
   "mob": "9876543210",
   "callTime": "2026-10-27T10:00:00.000Z",
-  "note": "Interested in morning batch",
-  "ipAddress": "1.2.3.4"
+  "note": "Interested in morning batch"
 }
 ```
 
@@ -1218,30 +1215,29 @@ Success (`201`):
     "callTime": "2026-10-27T10:00:00.000Z",
     "note": "Interested in morning batch",
     "ipAddress": "127.0.0.1",
-    "createdAt": "2026-10-27T09:30:00.000Z",
-    "updatedAt": "2026-10-27T09:30:00.000Z"
+    "createdAt": "2026-10-27T09:30:00.000Z"
   }
 }
 ```
 
-Errors: `400` (missing/invalid `clientName`, `mob`, `callTime`, `note` too long, missing `ipAddress`), `429` (rate limit), `500` (server error).
+Errors: `400` (missing/invalid `clientName`, `mob`, `callTime`, `note`, or `callTime` in the past), `429` (rate limit), `500` (server error).
 
 ```bash
-curl -X GET http://localhost:5000/api/v1/schedule/ \
+curl -X POST http://localhost:5000/api/v1/schedule/ \
   -H "Content-Type: application/json" \
-  -d '{"clientName":"Rahul Sharma","mob":"9876543210","callTime":"2026-10-27T10:00:00.000Z","note":"Interested in morning batch","ipAddress":"1.2.3.4"}'
+  -d '{"clientName":"Rahul Sharma","mob":"9876543210","callTime":"2026-10-27T10:00:00.000Z","note":"Interested in morning batch"}'
 ```
 
 ```js
 const res = await fetch(`${API_BASE}/schedule/`, {
-  method: "GET",
+  method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     clientName: "Rahul Sharma",
     mob: "9876543210",
     callTime: "2026-10-27T10:00:00.000Z",
-    note: "Interested in morning batch",
-    ipAddress: "1.2.3.4"
+    note: "Interested in morning batch"
+    // ipAddress is intentionally omitted — the server records it.
   })
 });
 const result = await res.json(); // result.data is the created call
@@ -1249,17 +1245,16 @@ const result = await res.json(); // result.data is the created call
 
 ### List all scheduled calls
 
-#### `POST /api/v1/schedule/`
+#### `GET /api/v1/schedule/`
 
 Handler: `GetAllCall`. Returns every scheduled call, newest first.
 
-Requires `SUPER_ADMIN`. As mounted the route applies only `requireSuperAdmin` (no `authenticate`), so `req.user` is never set and every call currently returns `403 { "error": "You do not have permission", "code": "SUPER_ADMIN_REQUIRED" }`. Add `authenticate` before `requireSuperAdmin` in `src/routes/scheduleCall.route.js` to enable it.
+Requires an authenticated `SUPER_ADMIN` session (`authenticate` + `requireSuperAdmin`).
 
 Use an admin cookie jar:
 
 ```bash
-curl -X POST http://localhost:5000/api/v1/schedule/ \
-  -H "Content-Type: application/json" \
+curl http://localhost:5000/api/v1/schedule/ \
   -b admin-cookies.txt
 ```
 
@@ -1278,18 +1273,17 @@ Success (`200`):
       "callTime": "2026-10-27T10:00:00.000Z",
       "note": "...",
       "ipAddress": "127.0.0.1",
-      "createdAt": "2026-10-27T10:00:00.000Z",
-      "updatedAt": "2026-10-27T10:00:00.000Z"
+      "createdAt": "2026-10-27T10:00:00.000Z"
     }
   ]
 }
 ```
 
-Errors: `403 SUPER_ADMIN_REQUIRED`, `500`.
+Errors: `401` (no session), `403 SUPER_ADMIN_REQUIRED`, `500`.
 
 ```js
 const res = await fetch(`${API_BASE}/schedule/`, {
-  method: "POST",
+  method: "GET",
   credentials: "include",
   headers: { "Content-Type": "application/json" }
 });
@@ -1331,8 +1325,6 @@ Success (`200`):
 
 Errors: `400` (invalid id, no fields to update, or invalid field value), `404` ("Scheduled call not found"), `500`.
 
-> Note: the route is mounted at `/api/v1/schedule/` without `:id` in `src/routes/scheduleCall.route.js`, so as mounted `req.params.id` is `undefined` and the endpoint returns `400 { "success": false, "message": "Invalid call ID" }`. Mount it as `router.patch("/:id", ...)` to use `/api/v1/schedule/:id`.
-
 ```js
 const res = await fetch(`${API_BASE}/schedule/3`, {
   method: "PATCH",
@@ -1365,8 +1357,6 @@ Success (`200`):
 
 Errors: `400` (invalid id), `404` ("Scheduled call not found"), `500`.
 
-> Note: as mounted the route is `/api/v1/schedule/` without `:id`, so `req.params.id` is `undefined` and the endpoint returns `400 { "success": false, "message": "Invalid call ID" }`. Mount it as `router.delete("/:id", ...)` to use `/api/v1/schedule/:id`.
-
 ```js
 const res = await fetch(`${API_BASE}/schedule/3`, {
   method: "DELETE",
@@ -1379,7 +1369,7 @@ const res = await fetch(`${API_BASE}/schedule/3`, {
 
 | Status | Meaning |
 |---|---|
-| `400` | Validation failed (missing/invalid `clientName`, `mob`, `callTime`, `note`, `ipAddress`, or call id) |
+| `400` | Validation failed (missing/invalid `clientName`, `mob`, `callTime`, `note`, or call id) |
 | `401` | Authentication required (`authenticate` middleware) |
 | `403` | `SUPER_ADMIN_REQUIRED` — caller is not a platform admin |
 | `404` | Scheduled call not found |

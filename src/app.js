@@ -38,6 +38,11 @@ const nextStaticPath = `${path.join(publicPath, "_next", "static")}${path.sep}`;
 
 const app = express();
 
+// Render terminates TLS and appends the visitor's address to X-Forwarded-For.
+// Trust exactly one proxy hop so `req.ip` is the real client IP (not the proxy
+// and not a value the browser can spoof for the per-IP rate limit).
+app.set("trust proxy", 1);
+
 // Normalized (no trailing slash) so a value like
 // `https://client.vercel.app/` still matches the browser's Origin header.
 const clientOrigins = getClientOrigins();
