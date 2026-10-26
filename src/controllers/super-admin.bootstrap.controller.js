@@ -176,7 +176,7 @@ export async function bootstrapSuperAdmin(req, res, next) {
       user: result.user,
       login: {
         method: "POST",
-        path: "/api/v1/auth/login",
+        path: "/api/v1/auth/super-admin/login",
         body: { email: result.user.email, password: "<the password you supplied>" },
       },
     });

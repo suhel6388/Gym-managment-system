@@ -440,3 +440,15 @@ model SubscriptionAuditLog {
   @@index([gymId, createdAt])
   @@index([action, createdAt])
 }
+
+model ScheduleCall {
+  id         Int      @id @default(autoincrement())
+  clientName String
+  Mob        String @db.VarChar(13)
+  callTime   DateTime
+  note       String   @db.VarChar(50)
+  ipAddress  String
+  createdAt  DateTime @default(now())
+
+  @@index([ipAddress, createdAt])
+}
