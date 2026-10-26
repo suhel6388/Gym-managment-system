@@ -20,6 +20,7 @@ import staffRoutes from "./routes/staff.route.js";
 import subscriptionRoutes from "./routes/subscription.route.js";
 import adminSubscriptionRoutes from "./routes/admin.subscription.route.js";
 import superAdminRoutes from "./routes/super-admin.route.js";
+import scheduleCallRoutes from "./routes/scheduleCall.route.js"
 import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
@@ -84,9 +85,18 @@ app.use("/api/v1/subscription", subscriptionRoutes);
 app.use("/api/v1/subscription/webhooks", subscriptionWebhookRoutes);
 app.use("/api/v1/admin/subscription", adminSubscriptionRoutes);
 
+
+
 // Platform-owner dashboard. Cross-gym access is confined to this router and is
 // enforced by authenticate + requireSuperAdmin on every request.
 app.use("/api/v1/super-admin", superAdminRoutes);
+
+
+//call schelue 
+
+app.use("/api/v1/schedule",scheduleCallRoutes )
+
+
 
 // Start the background expiry/reconciliation job (defense in depth; entitlement
 // is also checked on every request by requireActiveSubscription).
