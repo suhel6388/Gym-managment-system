@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { prisma } from "../db.js";
 
 
@@ -132,19 +133,110 @@ export async function AddCall(req, res, next) {
 
 
 
+const listCallsSchema = z.object({
+  q: z.string().trim().max(120).optional(),
+  status: z.enum(["upcoming", "today", "past"]).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 export async function GetAllCall(req, res, next){
   try {
-    const calls = await prisma.scheduleCall.findMany({
+    const parsed = listCallsSchema.safeParse(req.query ?? {});
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid list parameters",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    const input = parsed.data;
+    const q = input.q?.trim();
+    const page = Math.max(1, input.page ?? 1);
+    const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+    const paginated = Boolean(
+      q || input.status || input.page !== undefined || input.limit !== undefined,
+    );
+
+    // Status is derived from `callTime`; there is no status column. Buckets are
+    // whole calendar days so they match the badge shown in the client:
+    // past = before today, today = any time today, upcoming = after today.
+    const now = new Date();
+    const startOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
+    const startOfNextDay = new Date(startOfDay);
+    startOfNextDay.setDate(startOfNextDay.getDate() + 1);
+
+    const and = [];
+
+    if (input.status === "upcoming") {
+      and.push({ callTime: { gte: startOfNextDay } });
+    } else if (input.status === "past") {
+      and.push({ callTime: { lt: startOfDay } });
+    } else if (input.status === "today") {
+      and.push({ callTime: { gte: startOfDay, lt: startOfNextDay } });
+    }
+
+    if (q) {
+      const filters = [
+        { clientName: { contains: q, mode: "insensitive" } },
+        { Mob: { contains: q } },
+        { ipAddress: { contains: q } },
+        { note: { contains: q, mode: "insensitive" } },
+      ];
+
+      const numericId = Number(q);
+      if (Number.isSafeInteger(numericId) && numericId > 0) {
+        filters.push({ id: numericId });
+      }
+
+      and.push({ OR: filters });
+    }
+
+    const where = and.length ? { AND: and } : {};
+    const findArgs = {
+      where,
       orderBy: {
         createdAt: "desc",
       },
-    });
+    };
+
+    if (paginated) {
+      findArgs.skip = (page - 1) * limit;
+      findArgs.take = limit;
+    }
+
+    const [calls, total] = await Promise.all([
+      prisma.scheduleCall.findMany(findArgs),
+      paginated ? prisma.scheduleCall.count({ where }) : null,
+    ]);
+
+    const count = total ?? calls.length;
 
     return res.status(200).json({
       success: true,
       message:"All call details fetch sucessfully!",
-      count: calls.length,
+      count,
       data: calls,
+      ...(paginated
+        ? {
+            pagination: {
+              page,
+              limit,
+              total: count,
+              totalPages: Math.max(1, Math.ceil(count / limit)),
+            },
+            filters: {
+              q: q ?? null,
+              status: input.status ?? null,
+            },
+          }
+        : {}),
     });
   } catch (error) {
     console.error("Get all scheduled calls error:", error);

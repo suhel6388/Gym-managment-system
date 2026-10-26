@@ -1251,6 +1251,40 @@ Handler: `GetAllCall`. Returns every scheduled call, newest first.
 
 Requires an authenticated `SUPER_ADMIN` session (`authenticate` + `requireSuperAdmin`).
 
+Optional query parameters (used by the Super Admin console):
+
+| Query | Type | Description |
+|---|---|---|
+| `q` | string | Case-insensitive match on customer name, mobile, IP address or note. A numeric value also matches the call `id`. |
+| `status` | `upcoming` \| `today` \| `past` | Derived from `callTime` in whole calendar days: `today` is any time on the current day, `past` is any earlier day, `upcoming` is any later day. |
+| `page` | integer ≥ 1 | Page number. Defaults to `1` when paginating. |
+| `limit` | integer 1–100 | Rows per page. Defaults to `20` when paginating. |
+
+When none of these parameters are supplied, the response keeps the original shape: every row with `count` equal to the array length.
+
+When at least one is supplied, `data` contains the requested page and the response adds `pagination` and `filters`:
+
+```json
+{
+  "success": true,
+  "message": "All call details fetch sucessfully!",
+  "count": 42,
+  "data": [
+    {
+      "id": 3,
+      "clientName": "Rahul Sharma",
+      "Mob": "9876543210",
+      "callTime": "2026-10-27T10:00:00.000Z",
+      "note": "Interested in morning batch",
+      "ipAddress": "127.0.0.1",
+      "createdAt": "2026-10-27T09:30:00.000Z"
+    }
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 42, "totalPages": 3 },
+  "filters": { "q": "rahul", "status": "upcoming" }
+}
+```
+
 Use an admin cookie jar:
 
 ```bash
