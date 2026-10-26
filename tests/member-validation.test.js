@@ -8,15 +8,17 @@ const requiredFields = {
   phone: "9876543210",
   gender: "male",
   dateOfBirth: "1998-04-21",
+  timing: "MORNING",
 };
 
-test("memberInput accepts the four required fields on their own", () => {
+test("memberInput accepts the five required fields on their own", () => {
   const parsed = memberInput.parse(requiredFields);
 
   assert.equal(parsed.name, "Rahul Sharma");
   assert.equal(parsed.phone, "9876543210");
   assert.equal(parsed.gender, "male");
   assert.ok(parsed.dateOfBirth instanceof Date);
+  assert.equal(parsed.timing, "MORNING");
 });
 
 test("memberInput leaves email, address, joinedAt and notes optional", () => {
@@ -29,7 +31,7 @@ test("memberInput leaves email, address, joinedAt and notes optional", () => {
 });
 
 test("memberInput rejects each missing required field", () => {
-  for (const field of ["name", "phone", "gender", "dateOfBirth"]) {
+  for (const field of ["name", "phone", "gender", "dateOfBirth", "timing"]) {
     const body = { ...requiredFields };
     delete body[field];
 
@@ -39,6 +41,17 @@ test("memberInput rejects each missing required field", () => {
       `expected a ZodError when ${field} is missing`,
     );
   }
+});
+
+test("memberInput requires a valid batch timing", () => {
+  assert.throws(
+    () => memberInput.parse({ ...requiredFields, timing: undefined }),
+    /Batch timing is required/,
+  );
+  assert.throws(
+    () => memberInput.parse({ ...requiredFields, timing: "NIGHT" }),
+    /Batch timing must be/i,
+  );
 });
 
 test("memberInput rejects a future date of birth", () => {

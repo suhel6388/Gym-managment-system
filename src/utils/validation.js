@@ -39,8 +39,38 @@ export const memberInput = z.object({
   emergencyContact: z.string().trim().max(120).nullable().optional(),
   emergencyPhone: z.string().trim().max(30).nullable().optional(),
   joinedAt: z.coerce.date().optional(),
-  timing: z.nativeEnum(Timing).optional(),
+  // Required when creating a member. `memberInput.partial()` keeps PATCH
+  // backwards-compatible, so existing members can still omit it on updates.
+  timing: z.nativeEnum(Timing, {
+    error: (issue) =>
+      issue.input === undefined
+        ? "Batch timing is required"
+        : "Batch timing must be MORNING, AFTERNOON or EVENING"
+  }),
   notes: z.string().trim().max(2000).nullable().optional()
+})
+
+export const membershipInput = z.object({
+  memberId: z.string({ error: "Member is required" }).trim().min(1, "Member is required"),
+  planId: z
+    .string({ error: "Membership plan is required" })
+    .trim()
+    .min(1, "Membership plan is required"),
+  startDate: z.coerce.date({
+    error: (issue) =>
+      issue.input === undefined || issue.input === null || issue.input === ""
+        ? "Start date is required"
+        : "Enter a valid start date"
+  }),
+  discountPaise: z
+    .number({
+      error: (issue) =>
+        issue.input === undefined
+          ? "Discount is required"
+          : "Discount must be a number"
+    })
+    .int("Discount must be a whole number of paise")
+    .nonnegative("Discount must be zero or more")
 })
 export const expenseInput = z.object({
   title: z.string().trim().min(1).max(120),

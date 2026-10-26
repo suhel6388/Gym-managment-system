@@ -1,5 +1,22 @@
 import { z } from "zod";
 import { prisma } from "../db.js";
+import { membershipInput } from "../utils/validation.js";
+
+/** Return the first validation message so the client can show it in a toast. */
+function handleMembershipError(err, res, next) {
+  if (err?.name === "ZodError") {
+    const first = err.issues?.[0];
+    return res.status(400).json({
+      error: first?.message ?? "Validation failed",
+      field: typeof first?.path?.[0] === "string" ? first.path[0] : null,
+      details: (err.issues ?? []).map((issue) => ({
+        field: typeof issue.path?.[0] === "string" ? issue.path[0] : null,
+        message: issue.message
+      }))
+    });
+  }
+  return next(err);
+}
 
 export async function listMemberships(req, res, next) {
   try {
@@ -20,19 +37,14 @@ export async function listMemberships(req, res, next) {
 
 export async function createMembership(req, res, next) {
   try {
-    const input = z.object({
-      memberId: z.string().min(1),
-      planId: z.string().min(1),
-      startDate: z.coerce.date().optional(),
-      discountPaise: z.number().int().nonnegative().default(0)
-    }).parse(req.body);
+    const input = membershipInput.parse(req.body);
     const [member, plan] = await Promise.all([
       prisma.member.findFirst({ where: { id: input.memberId, gymId: req.user.gymId, archivedAt: null } }),
       prisma.membershipPlan.findFirst({ where: { id: input.planId, gymId: req.user.gymId, isActive: true } })
     ]);
     if (!member) return res.status(404).json({ error: "Member not found" });
     if (!plan) return res.status(404).json({ error: "Active plan not found" });
-    const startDate = input.startDate || new Date();
+    const startDate = input.startDate;
     const endDate = new Date(startDate);
     endDate.setMonth(endDate.getMonth() + plan.durationMonths);
     const data = await prisma.membership.create({
@@ -43,7 +55,7 @@ export async function createMembership(req, res, next) {
       include: { member: true, plan: true }
     });
     res.status(201).json({ data });
-  } catch (err) { next(err); }
+  } catch (err) { handleMembershipError(err, res, next); }
 }
 
 export async function freezeMembership(req, res, next) {

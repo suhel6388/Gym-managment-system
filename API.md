@@ -665,7 +665,7 @@ comes from the authenticated user, never from the body.
 | `emergencyContact` | string or null | No       | Max 120 chars |
 | `emergencyPhone`   | string or null | No       | Max 30 chars |
 | `joinedAt`         | date string    | No       | ISO date; defaults to now |
-| `timing`           | enum `Timing`  | No       | `MORNING`, `AFTERNOON` or `EVENING`; defaults to `MORNING` |
+| `timing`           | enum `Timing`  | **Yes**  | `MORNING`, `AFTERNOON` or `EVENING` (batch timing) |
 | `notes`            | string or null | No       | Max 2000 chars |
 
 ### Example body
@@ -683,14 +683,15 @@ comes from the authenticated user, never from the body.
 }
 ```
 
-Minimal body (only the four required fields):
+Minimal body (only the five required fields):
 
 ```json
 {
   "name": "Aman Verma",
   "phone": "9123456780",
   "gender": "male",
-  "dateOfBirth": "2000-01-15"
+  "dateOfBirth": "2000-01-15",
+  "timing": "MORNING"
 }
 ```
 
@@ -760,7 +761,7 @@ archived member also returns `409`.
 ## Quick Checklist
 
 - Send the session cookie (`credentials: "include"`)
-- Include `name`, `phone`, `gender` and `dateOfBirth`
+- Include `name`, `phone`, `gender`, `dateOfBirth` and `timing`
 - Omit `memberCode` to let the server generate a unique one
 - Do not send `gymId`
 - Read the created member from `response.data`
@@ -813,7 +814,7 @@ Create body:
 }
 ```
 
-`startDate` and `discountPaise` are optional. The end date is derived from the selected plan's duration. A successful create returns `201` and `{ "data": ... }`. Freeze and cancel return a message; missing/ineligible records return `404`.
+`startDate` and `discountPaise` are required. Use `0` when there is no discount. The end date is derived from the selected plan's duration. A successful create returns `201` and `{ "data": ... }`. Freeze and cancel return a message; missing/ineligible records return `404`.
 
 ## Attendance
 
