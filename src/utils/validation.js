@@ -4,17 +4,37 @@ import { Timing, PaymentMode } from "../../generated/prisma/client"
 
 export const memberInput = z.object({
   memberCode: z.string().trim().min(1).max(50).optional(),
-  name: z.string().trim().min(1).max(100),
-  phone: z.string().trim().min(7).max(20),
+  name: z
+    .string({ error: "Member name is required" })
+    .trim()
+    .min(1, "Member name is required")
+    .max(100, "Member name must be 100 characters or fewer"),
+  phone: z
+    .string({ error: "Mobile number is required" })
+    .trim()
+    .min(7, "Mobile number must be at least 7 digits")
+    .max(20, "Mobile number must be 20 characters or fewer"),
   email: z
     .string()
     .trim()
-    .email()
+    .email("Enter a valid email address")
     .max(191)
     .optional()
     .or(z.literal("").transform(() => undefined)),
-  dateOfBirth: z.coerce.date().nullable().optional(),
-  gender: z.string().trim().max(40).nullable().optional(),
+  // Required for new members. `memberInput.partial()` keeps updates
+  // backwards-compatible: existing members can be patched without resending
+  // these fields, but a value that *is* provided must be valid.
+  dateOfBirth: z.coerce
+    .date({ error: "Enter a valid date of birth" })
+    .refine(
+      (value) => value.getTime() <= Date.now(),
+      "Date of birth can't be in the future"
+    ),
+  gender: z
+    .string({ error: "Gender is required" })
+    .trim()
+    .min(1, "Gender is required")
+    .max(40, "Gender must be 40 characters or fewer"),
   address: z.string().trim().max(500).nullable().optional(),
   emergencyContact: z.string().trim().max(120).nullable().optional(),
   emergencyPhone: z.string().trim().max(30).nullable().optional(),

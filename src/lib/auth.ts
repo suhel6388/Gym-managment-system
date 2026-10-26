@@ -3,7 +3,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { emailOTP } from "better-auth/plugins";
 import { Pool } from "pg";
 import {prisma} from "./prisma"
-import { sendOTPEmail, sendPasswordResetEmail } from "./email";
+import { sendOTPEmail, sendPasswordResetEmail, sendPasswordResetOtpEmail } from "./email";
 
 import dotenv from "dotenv";
 import {
@@ -11,6 +11,7 @@ import {
   getTrustedOrigins,
   isCrossSiteFrontend,
   resolvePublicApiOrigin,
+  resolveRequestClientOrigin,
 } from "./origins";
 dotenv.config();
 
@@ -50,10 +51,24 @@ export const auth = betterAuth({
   requireEmailVerification: true,
    // Password-reset emails go through the existing SMTP service. The link
    // points at the frontend reset page, which posts token+newPassword back
-   // to POST /api/v1/auth/reset-password.
-   async sendResetPassword({ user, token }) {
-     const url = `${clientOrigin}/reset-password?token=${encodeURIComponent(token)}`;
-     await sendPasswordResetEmail(user.email, url);
+   // to POST /api/v1/auth/reset-password. The origin is taken from the request
+   // that asked for the reset so each allowed deployment gets its own link.
+   async sendResetPassword({ user, token, url }, request) {
+     // Prefer the reset page origin passed as `redirectTo` by the controller
+     // (it already validated the request's Origin header). Better Auth encodes
+     // it as the `callbackURL` query parameter on its own reset URL.
+     const allowed = getClientOrigins();
+     let origin: string | null = null;
+     try {
+       const callback = new URL(url).searchParams.get("callbackURL");
+       const candidate = callback ? new URL(callback).origin : null;
+       if (candidate && allowed.includes(candidate)) origin = candidate;
+     } catch {
+       origin = null;
+     }
+     const resetOrigin = origin ?? resolveRequestClientOrigin(request);
+     const resetUrl = `${resetOrigin}/reset-password?token=${encodeURIComponent(token)}`;
+     await sendPasswordResetEmail(user.email, resetUrl);
    },
  },
  emailVerification: {
@@ -69,8 +84,22 @@ export const auth = betterAuth({
      // also means a slow SMTP server cannot block the signup response.
      sendVerificationOnSignUp: false,
      async sendVerificationOTP({ email, otp, type }) {
-       if (type !== "email-verification") return;
-       await sendOTPEmail(email, otp);
+       // Email verification codes and password-reset codes both go through
+       // the SMTP service. Delivery failures are logged rather than thrown so
+       // a reset request cannot reveal whether the account exists.
+       try {
+         if (type === "email-verification") {
+           await sendOTPEmail(email, otp);
+         } else if (type === "forget-password") {
+           await sendPasswordResetOtpEmail(email, otp);
+         }
+       } catch (err) {
+         console.error(
+           `[auth] Could not deliver the ${type} code to ${email}: ${
+             err instanceof Error ? err.message : String(err)
+           }`,
+         );
+       }
      },
    }),
  ],

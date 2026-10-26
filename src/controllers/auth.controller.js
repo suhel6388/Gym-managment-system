@@ -4,7 +4,7 @@ import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
 import { sendOTPEmail } from "../lib/email.js";
 import { startTrial } from "../services/subscription.service.js";
-import { getClientOrigins } from "../lib/origins.js";
+import { getClientOrigins, resolveClientOriginFromRequest } from "../lib/origins.js";
 
 const phoneSchema = z
   .string()
@@ -47,12 +47,49 @@ const googleSchema = z.object({
 
 const forgotPasswordSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
+  /** `link` emails a reset URL; `otp` emails a 6-digit code. */
+  method: z.enum(["link", "otp"]).optional().default("link"),
 });
 
-const resetPasswordSchema = z.object({
-  token: z.string().trim().min(1, "Reset token is required"),
-  newPassword: z.string().min(8).max(128),
-});
+const resetPasswordSchema = z
+  .object({
+    method: z.enum(["link", "otp"]).optional(),
+    token: z.string().trim().optional(),
+    email: z.string().trim().toLowerCase().email().optional(),
+    otp: z.string().trim().optional(),
+    newPassword: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .max(128, "Password must be 128 characters or fewer"),
+  })
+  .superRefine((value, ctx) => {
+    // Infer the method from the fields supplied when the client omits it.
+    const method = value.method ?? (value.token ? "link" : "otp");
+    if (method === "link") {
+      if (!value.token) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["token"],
+          message: "Reset token is required",
+        });
+      }
+      return;
+    }
+    if (!value.email) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["email"],
+        message: "Email is required for a code reset",
+      });
+    }
+    if (!value.otp || !/^\d{6}$/.test(value.otp)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["otp"],
+        message: "OTP must be a 6-digit code",
+      });
+    }
+  });
 
 /**
  * Accept a redirect URL only when it belongs to a configured frontend origin.
@@ -391,19 +428,39 @@ export async function login(req, res, next) {
   }
 }
 
-// POST /api/v1/auth/forgot-password — { email }
+// POST /api/v1/auth/forgot-password — { email, method? }
 // Always answers with the same neutral message so the endpoint cannot be used
-// to enumerate accounts. The reset link is delivered by Better Auth's
-// sendResetPassword hook (see src/lib/auth.ts).
+// to enumerate accounts. `method: "link"` (default) emails a reset URL via
+// Better Auth's sendResetPassword hook; `method: "otp"` emails a 6-digit code
+// through the emailOTP plugin (see src/lib/auth.ts).
 export async function forgotPassword(req, res, next) {
   try {
     const input = forgotPasswordSchema.parse(req.body);
-    await auth.api.requestPasswordReset({
-      body: { email: input.email },
-      headers: fromNodeHeaders(req.headers),
-      asResponse: true,
-    });
-    return res.json({ message: "If an account exists for this email, a password reset link was sent." });
+    const message =
+      input.method === "otp"
+        ? "If an account exists for this email, a password reset code was sent."
+        : "If an account exists for this email, a password reset link was sent.";
+
+    if (input.method === "otp") {
+      await auth.api.requestPasswordResetEmailOTP({
+        body: { email: input.email },
+        headers: fromNodeHeaders(req.headers),
+        asResponse: true,
+      });
+    } else {
+      await auth.api.requestPasswordReset({
+        body: {
+          email: input.email,
+          // Used by sendResetPassword to build a link for the frontend that
+          // made this request instead of always the first configured origin.
+          redirectTo: `${resolveClientOriginFromRequest(req)}/reset-password`,
+        },
+        headers: fromNodeHeaders(req.headers),
+        asResponse: true,
+      });
+    }
+
+    return res.json({ message, method: input.method });
   } catch (err) {
     if (err?.name === "ZodError") {
       const first = err?.issues?.[0];
@@ -411,29 +468,83 @@ export async function forgotPassword(req, res, next) {
     }
     // Never surface Better Auth's "user not found" style errors here.
     if (err?.statusCode ?? err?.status) {
-      return res.json({ message: "If an account exists for this email, a password reset link was sent." });
+      return res.json({
+        message:
+          "If an account exists for this email, a password reset link or code was sent.",
+      });
     }
     next(err);
   }
 }
 
-// POST /api/v1/auth/reset-password — { token, newPassword }
+// GET /api/v1/auth/reset-password/verify?token=...
+// Lets the reset page reject an invalid/expired link before the user types a
+// new password. The token itself is the secret, so this reveals only whether
+// the caller already holds a valid one.
+export async function verifyResetToken(req, res, next) {
+  try {
+    const token = String(req.query.token ?? "").trim();
+    if (!token) {
+      return res.status(400).json({
+        code: "INVALID_TOKEN",
+        error: "This reset link is missing its token. Request a new one.",
+      });
+    }
+    const record = await prisma.verification.findFirst({
+      where: { identifier: `reset-password:${token}` },
+      select: { expiresAt: true },
+    });
+    if (!record || record.expiresAt.getTime() <= Date.now()) {
+      return res.status(400).json({
+        code: "INVALID_TOKEN",
+        error: "This reset link is invalid or has expired. Request a new one.",
+      });
+    }
+    return res.json({ valid: true, expiresAt: record.expiresAt });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/v1/auth/reset-password — { token, newPassword } for a link reset
+// or { email, otp, newPassword } for an OTP reset.
 export async function resetPassword(req, res, next) {
   try {
     const input = resetPasswordSchema.parse(req.body);
-    const response = await auth.api.resetPassword({
-      body: { token: input.token, newPassword: input.newPassword },
-      headers: fromNodeHeaders(req.headers),
-      asResponse: true,
-    });
+    const method = input.method ?? (input.token ? "link" : "otp");
+
+    const response =
+      method === "otp"
+        ? await auth.api.resetPasswordEmailOTP({
+            body: {
+              email: input.email,
+              otp: input.otp,
+              password: input.newPassword,
+            },
+            headers: fromNodeHeaders(req.headers),
+            asResponse: true,
+          })
+        : await auth.api.resetPassword({
+            body: { token: input.token, newPassword: input.newPassword },
+            headers: fromNodeHeaders(req.headers),
+            asResponse: true,
+          });
+
     if (response.status >= 400) {
       const body = await response.json().catch(() => null);
       const code = body?.code;
       const message =
         code === "INVALID_TOKEN"
           ? "This reset link is invalid or has expired. Request a new one."
-          : body?.message ?? "Could not reset the password. Request a new link and try again.";
-      return res.status(response.status).json({ error: message });
+          : code === "OTP_EXPIRED"
+            ? "That code has expired. Request a new one."
+            : code === "TOO_MANY_ATTEMPTS"
+              ? "Too many attempts. Request a new code and try again."
+              : code === "INVALID_OTP"
+                ? "Invalid code. Check the 6-digit code and try again."
+                : body?.message ??
+                  "Could not reset the password. Request a new link and try again.";
+      return res.status(response.status).json({ error: message, code });
     }
     return res.json({ message: "Password updated. Sign in with your new password." });
   } catch (err) {

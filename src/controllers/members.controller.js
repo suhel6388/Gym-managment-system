@@ -18,6 +18,26 @@ function handlePrismaError(err, res, next) {
 }
 
 /**
+ * Turn a Zod failure into a 400 that names the offending field. The client
+ * shows `error` directly, so "Member name is required" is more useful than the
+ * generic "Validation failed" the shared error handler would produce.
+ */
+function handleMemberError(err, res, next) {
+  if (err?.name === "ZodError") {
+    const first = err.issues?.[0];
+    return res.status(400).json({
+      error: first?.message ?? "Validation failed",
+      field: typeof first?.path?.[0] === "string" ? first.path[0] : null,
+      details: (err.issues ?? []).map((issue) => ({
+        field: typeof issue.path?.[0] === "string" ? issue.path[0] : null,
+        message: issue.message,
+      })),
+    });
+  }
+  return handlePrismaError(err, res, next);
+}
+
+/**
  * Generates a member code that is unique within the gym, e.g. `MEM-0001`.
  * Falls back to a timestamp-based code if the sequential space is exhausted.
  */
@@ -86,7 +106,7 @@ export async function createMember(req, res, next) {
       data: { ...input, memberCode, gymId: req.user.gymId }
     });
     res.status(201).json({ data });
-  } catch (err) { handlePrismaError(err, res, next); }
+  } catch (err) { handleMemberError(err, res, next); }
 }
 
 export async function updateMember(req, res, next) {
@@ -99,7 +119,7 @@ export async function updateMember(req, res, next) {
 
     const data = await prisma.member.update({ where: { id: found.id }, data: input });
     res.json({ data });
-  } catch (err) { handlePrismaError(err, res, next); }
+  } catch (err) { handleMemberError(err, res, next); }
 }
 
 // Soft delete: keeps memberships/payments history intact

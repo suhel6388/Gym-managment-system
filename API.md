@@ -18,6 +18,9 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [`POST /api/v1/auth/logout`](#post-apiv1authlogout)
   - [`GET /api/v1/auth/me`](#get-apiv1authme)
   - [`POST /api/v1/auth/setup-gym`](#post-apiv1authsetup-gym)
+  - [`POST /api/v1/auth/forgot-password`](#post-apiv1authforgot-password)
+  - [`GET /api/v1/auth/reset-password/verify`](#get-apiv1authreset-passwordverify)
+  - [`POST /api/v1/auth/reset-password`](#post-apiv1authreset-password)
 - [Health](#health)
 - [Add Member API](#add-member-api)
 - [Membership plans](#membership-plans)
@@ -244,6 +247,9 @@ Email OTP delivery uses SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`S
 | `POST` | `/api/v1/auth/logout` | Sign out (clears the session cookie) |
 | `GET` | `/api/v1/auth/me` | Current user + gym info (`401` when signed out) |
 | `POST` | `/api/v1/auth/setup-gym` | Create the user's gym (once per account) |
+| `POST` | `/api/v1/auth/forgot-password` | Email a reset link (`method: "link"`) or 6-digit code (`method: "otp"`) |
+| `GET` | `/api/v1/auth/reset-password/verify` | Check whether a link token is still valid |
+| `POST` | `/api/v1/auth/reset-password` | Reset with a link token or an email OTP |
 
 ### `POST /api/v1/auth/signup`
 
@@ -558,6 +564,63 @@ Success (`201`):
 }
 ```
 
+### `POST /api/v1/auth/forgot-password`
+
+Starts a password reset. The response is always neutral, so the endpoint cannot be
+used to discover which emails have accounts.
+
+```json
+{
+  "email": "owner@example.com",
+  "method": "link"
+}
+```
+
+- `email` — required, valid email address.
+- `method` — `"link"` (default) emails a reset URL; `"otp"` emails a 6-digit code.
+- Success (`200`): `{ "message": "...", "method": "link" }` (or `"otp"`).
+- `400` for an invalid email address.
+- The reset link points at the frontend origin of the requesting app (when that
+  origin is in `CLIENT_ORIGIN`), falling back to the first configured origin.
+- Links expire in 1 hour; codes expire in 5 minutes and allow 3 attempts.
+
+### `GET /api/v1/auth/reset-password/verify`
+
+Checks a link token before the reset form is shown.
+
+```
+GET /api/v1/auth/reset-password/verify?token=<token>
+```
+
+- `200` `{ "valid": true, "expiresAt": "..." }` when the token is usable.
+- `400` `{ "code": "INVALID_TOKEN", "error": "..." }` when it is missing, used or expired.
+
+### `POST /api/v1/auth/reset-password`
+
+Completes the reset. Send one of the two shapes below.
+
+Link flow:
+
+```json
+{ "token": "reset-token", "newPassword": "new-password-123" }
+```
+
+Code flow:
+
+```json
+{
+  "method": "otp",
+  "email": "owner@example.com",
+  "otp": "123456",
+  "newPassword": "new-password-123"
+}
+```
+
+- `newPassword` is required, 8–128 characters.
+- Success (`200`): `{ "message": "Password updated. Sign in with your new password." }`.
+- Errors include `INVALID_TOKEN` (link used/expired), `OTP_EXPIRED`,
+  `INVALID_OTP` and `TOO_MANY_ATTEMPTS`.
+
 ## Health
 
 ### `GET /api/v1/health`
@@ -571,130 +634,65 @@ Does not require authentication.
 
 Creates a new member inside the logged-in user's gym.
 
-> **Note:** The route path below (`POST /api/members`) is an assumption. Change it to match however you mounted the router in your Express app.
-
----
-
 ## Endpoint
 
 ```
-POST /api/members
+POST /api/v1/members
 ```
 
 ## Authentication
 
-Required. Send the auth token your app already uses (example assumes a Bearer JWT):
-
-```
-Authorization: Bearer <token>
-```
-
-The `gymId` is taken from the authenticated user (`req.user.gymId`). **Do not send `gymId` in the body.**
+Requires a Better Auth session cookie (`credentials: "include"`). The `gymId`
+comes from the authenticated user, never from the body.
 
 ## Headers
 
-| Header          | Value              |
-| --------------- | ------------------ |
-| `Content-Type`  | `application/json` |
-| `Authorization` | `Bearer <token>`   |
+| Header         | Value              |
+| -------------- | ------------------ |
+| `Content-Type` | `application/json` |
 
 ## Request Body
 
-| Field        | Type            | Required | Rules                                         |
-| ------------ | --------------- | -------- | --------------------------------------------- |
-| `memberCode` | string          | Yes      | 1-50 chars, trimmed, unique within the gym    |
-| `name`       | string          | Yes      | 1-100 chars, trimmed                          |
-| `phone`      | string          | Yes      | 7-20 chars, trimmed                           |
-| `joinedAt`   | date string     | No       | ISO date, e.g. `2026-10-13`. Defaults to now  |
-| `timing`     | enum `Timing`   | No       | Must be a value from your `Timing` enum. Defaults to `MORNING` |
-| `notes`      | string or null  | No       | Max 2000 chars                                |
+| Field              | Type           | Required | Rules |
+| ------------------ | -------------- | -------- | ----- |
+| `name`             | string         | **Yes**  | 1-100 chars, trimmed |
+| `phone`            | string         | **Yes**  | 7-20 chars, trimmed |
+| `gender`           | string         | **Yes**  | 1-40 chars, e.g. `male`, `female`, `other`, `prefer-not-to-say` |
+| `dateOfBirth`      | date string    | **Yes**  | ISO date, not in the future, e.g. `1998-04-21` |
+| `memberCode`       | string         | No       | 1-50 chars, unique within the gym. Auto-generated (`MEM-0001`) when omitted |
+| `email`            | string         | No       | Valid email, max 191 chars |
+| `address`          | string or null | No       | Max 500 chars |
+| `emergencyContact` | string or null | No       | Max 120 chars |
+| `emergencyPhone`   | string or null | No       | Max 30 chars |
+| `joinedAt`         | date string    | No       | ISO date; defaults to now |
+| `timing`           | enum `Timing`  | No       | `MORNING`, `AFTERNOON` or `EVENING`; defaults to `MORNING` |
+| `notes`            | string or null | No       | Max 2000 chars |
 
 ### Example body
 
 ```json
 {
-  "memberCode": "GYM-0101",
   "name": "Rahul Sharma",
   "phone": "9876543210",
+  "gender": "male",
+  "dateOfBirth": "1998-04-21",
+  "email": "rahul@example.com",
   "joinedAt": "2026-10-13",
   "timing": "MORNING",
   "notes": "Prefers trainer in the morning batch"
 }
 ```
 
-Minimal body (only required fields):
+Minimal body (only the four required fields):
 
 ```json
 {
-  "memberCode": "GYM-0102",
   "name": "Aman Verma",
-  "phone": "9123456780"
+  "phone": "9123456780",
+  "gender": "male",
+  "dateOfBirth": "2000-01-15"
 }
 ```
-
----
-
-## Examples
-
-### cURL
-
-```bash
-curl -X POST http://localhost:5000/api/members \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{
-    "memberCode": "GYM-0101",
-    "name": "Rahul Sharma",
-    "phone": "9876543210",
-    "timing": "MORNING"
-  }'
-```
-
-### fetch (React / Vite / Next.js)
-
-```javascript
-async function addMember(token, member) {
-  const res = await fetch("http://localhost:5000/api/members", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`
-    },
-    body: JSON.stringify(member)
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json.error || "Failed to add member");
-  }
-
-  return json.data;
-}
-
-// usage
-const created = await addMember(token, {
-  memberCode: "GYM-0101",
-  name: "Rahul Sharma",
-  phone: "9876543210"
-});
-```
-
-### axios
-
-```javascript
-import axios from "axios";
-
-const { data } = await axios.post(
-  "http://localhost:5000/api/members",
-  { memberCode: "GYM-0101", name: "Rahul Sharma", phone: "9876543210" },
-  { headers: { Authorization: `Bearer ${token}` } }
-);
-
-console.log(data.data); // created member
-```
-
----
 
 ## Responses
 
@@ -705,9 +703,15 @@ console.log(data.data); // created member
   "data": {
     "id": "cm2abc123xyz",
     "gymId": "cm1gym456",
-    "memberCode": "GYM-0101",
+    "memberCode": "MEM-0001",
     "name": "Rahul Sharma",
     "phone": "9876543210",
+    "email": "rahul@example.com",
+    "dateOfBirth": "1998-04-21T00:00:00.000Z",
+    "gender": "male",
+    "address": null,
+    "emergencyContact": null,
+    "emergencyPhone": null,
     "joinedAt": "2026-10-13T00:00:00.000Z",
     "timing": "MORNING",
     "notes": null,
@@ -720,58 +724,47 @@ console.log(data.data); // created member
 
 ### 400 Bad Request (validation failed)
 
-Happens when a required field is missing or breaks a rule (e.g. empty `name`, `phone` too short, invalid `timing`).
-
-The exact error shape depends on your global error handler. A zod error typically looks like this if you pass `err.issues` through:
+The response names the first failing field so the client can show it inline:
 
 ```json
 {
-  "error": "Validation failed",
-  "issues": [
-    { "path": ["phone"], "message": "String must contain at least 7 character(s)" }
-  ]
+  "error": "Gender is required",
+  "field": "gender",
+  "details": [{ "field": "gender", "message": "Gender is required" }]
 }
 ```
 
 ### 401 Unauthorized
 
-Missing or invalid token (returned by your auth middleware).
+Missing or expired session (`authenticate` middleware).
 
 ### 409 Conflict (duplicate member code)
 
 A member with the same `memberCode` already exists in this gym.
 
 ```json
-{
-  "error": "A member with this member code already exists"
-}
+{ "error": "A member with this member code already exists" }
 ```
 
-Archived members still hold their `memberCode`, so you also get a 409 if you reuse a code from an archived member.
-
-### 500 Internal Server Error
-
-Anything unexpected. Handled by your global error middleware.
-
----
+Archived members still hold their `memberCode`, so reusing a code from an
+archived member also returns `409`.
 
 ## Related Endpoints
 
-| Method   | Path               | Purpose                                          |
-| -------- | ------------------ | ------------------------------------------------ |
-| `GET`    | `/api/members`     | List members (`from`, `to`, `search`, `includeArchived` query params) |
-| `PUT`    | `/api/members/:id` | Update a member (partial body allowed)           |
-| `DELETE` | `/api/members/:id` | Archive a member (soft delete)                   |
-
----
+| Method   | Path                    | Purpose |
+| -------- | ----------------------- | ------- |
+| `GET`    | `/api/v1/members`       | List members (`from`, `to`, `search`, `includeArchived` query params) |
+| `PATCH`  | `/api/v1/members/:id`   | Update a member (partial body allowed) |
+| `DELETE` | `/api/v1/members/:id`   | Archive a member (soft delete) |
 
 ## Quick Checklist
 
-- Send a valid auth token
-- Include `memberCode`, `name`, `phone`
-- Keep `memberCode` unique per gym
+- Send the session cookie (`credentials: "include"`)
+- Include `name`, `phone`, `gender` and `dateOfBirth`
+- Omit `memberCode` to let the server generate a unique one
 - Do not send `gymId`
 - Read the created member from `response.data`
+
 ## Membership plans
 
 All plan routes require an authenticated user with a gym.

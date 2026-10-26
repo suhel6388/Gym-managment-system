@@ -139,6 +139,36 @@ export async function sendOTPEmail(
 }
 
 /**
+ * Send the 6-digit code used by the OTP password-reset flow. In dev
+ * (`EMAIL_LOG_OTPS=true`) the code is logged instead of emailed.
+ */
+export async function sendPasswordResetOtpEmail(
+  email: string,
+  otp: string
+): Promise<boolean> {
+  const subject = "Your Gym CRM password reset code";
+  const text =
+    `Your password reset code is ${otp}. It expires in 5 minutes.\n\n` +
+    "If you didn't request this, you can ignore this email.";
+
+  const html =
+    `<p>Your password reset code is <strong>${otp}</strong>.</p>` +
+    "<p>It expires in 5 minutes. If you didn't request this, you can ignore this email.</p>";
+
+  if (forceConsole) {
+    console.log(`[email:dev] Password reset OTP for ${email}: ${otp}`);
+    return true;
+  }
+
+  if (!transporter) {
+    throw new Error("SMTP transport is not configured");
+  }
+
+  await sendMail({ to: email, subject, text, html });
+  return true;
+}
+
+/**
  * Send a password-reset link. The link points at the frontend reset page,
  * which exchanges the token for a new password via POST /api/v1/auth/reset-password.
  * In dev (SMTP unset) the link is logged instead of emailed.

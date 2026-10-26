@@ -46,6 +46,57 @@ export function getClientOrigins(env: AuthEnv = process.env): string[] {
   return configured.length > 0 ? configured : ["http://localhost:3000"];
 }
 
+/**
+ * Frontend origin to embed in an emailed link.
+ *
+ * Prefers the `Origin`/`Referer` of the request that triggered the email when
+ * it belongs to a configured client origin, so a user on any allowed
+ * deployment receives a link back to that same deployment. Falls back to the
+ * first configured client origin.
+ */
+export function resolveRequestClientOrigin(
+  request?: Request | null,
+  env: AuthEnv = process.env
+): string {
+  const allowed = getClientOrigins(env);
+  const candidates = [
+    request?.headers?.get("origin"),
+    request?.headers?.get("referer"),
+  ];
+
+  for (const candidate of candidates) {
+    const origin = normalizeOrigin(candidate);
+    if (origin && allowed.includes(origin)) return origin;
+  }
+
+  return allowed[0];
+}
+
+/**
+ * Same resolution for an Express request. Better Auth's server-side API calls
+ * do not always preserve the incoming `Origin` header on the request passed to
+ * `sendResetPassword`, so the controller resolves it here and forwards it as
+ * `redirectTo` when starting a link reset.
+ */
+export function resolveClientOriginFromRequest(
+  req:
+    | { headers?: Record<string, string | string[] | undefined> }
+    | null
+    | undefined,
+  env: AuthEnv = process.env
+): string {
+  const allowed = getClientOrigins(env);
+  const rawCandidates = [req?.headers?.origin, req?.headers?.referer];
+
+  for (const raw of rawCandidates) {
+    const candidate = Array.isArray(raw) ? raw[0] : raw;
+    const origin = normalizeOrigin(candidate);
+    if (origin && allowed.includes(origin)) return origin;
+  }
+
+  return allowed[0];
+}
+
 /** True when the URL points at a loopback host (local development). */
 export function isLocalOrigin(origin: string): boolean {
   try {

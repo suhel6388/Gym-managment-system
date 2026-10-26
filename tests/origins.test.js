@@ -9,7 +9,9 @@ import {
   isCrossSiteFrontend,
   normalizeOrigin,
   parseOrigins,
+  resolveClientOriginFromRequest,
   resolvePublicApiOrigin,
+  resolveRequestClientOrigin,
 } from "../src/lib/origins.js";
 
 const RENDER_API = "https://gym-managment-system-7yiu.onrender.com";
@@ -147,5 +149,82 @@ test("isCrossSiteFrontend is false for the same host or plain HTTP", () => {
       CLIENT_ORIGIN: "http://localhost:3000",
     }),
     false,
+  );
+});
+
+const MULTI_ORIGIN_ENV = {
+  CLIENT_ORIGIN: `http://localhost:3000,${VERCEL_CLIENT}`,
+};
+
+test("resolveRequestClientOrigin uses the requesting allowed origin", () => {
+  const request = new Request("http://localhost:5000/api/v1/auth/forgot-password", {
+    headers: { origin: VERCEL_CLIENT },
+  });
+
+  assert.strictEqual(
+    resolveRequestClientOrigin(request, MULTI_ORIGIN_ENV),
+    VERCEL_CLIENT,
+  );
+});
+
+test("resolveRequestClientOrigin falls back to the Referer origin", () => {
+  const request = new Request("http://localhost:5000/api/v1/auth/forgot-password", {
+    headers: { referer: `${VERCEL_CLIENT}/forgot-password` },
+  });
+
+  assert.strictEqual(
+    resolveRequestClientOrigin(request, MULTI_ORIGIN_ENV),
+    VERCEL_CLIENT,
+  );
+});
+
+test("resolveRequestClientOrigin ignores unlisted origins", () => {
+  const request = new Request("http://localhost:5000/api/v1/auth/forgot-password", {
+    headers: { origin: "https://evil.example.com" },
+  });
+
+  assert.strictEqual(
+    resolveRequestClientOrigin(request, MULTI_ORIGIN_ENV),
+    "http://localhost:3000",
+  );
+  assert.strictEqual(
+    resolveRequestClientOrigin(undefined, MULTI_ORIGIN_ENV),
+    "http://localhost:3000",
+  );
+});
+
+test("resolveClientOriginFromRequest reads Express headers", () => {
+  assert.strictEqual(
+    resolveClientOriginFromRequest(
+      { headers: { origin: VERCEL_CLIENT } },
+      MULTI_ORIGIN_ENV,
+    ),
+    VERCEL_CLIENT,
+  );
+  assert.strictEqual(
+    resolveClientOriginFromRequest(
+      { headers: { referer: `${VERCEL_CLIENT}/reset-password` } },
+      MULTI_ORIGIN_ENV,
+    ),
+    VERCEL_CLIENT,
+  );
+  // Node lowercases header names but Express can hand back arrays.
+  assert.strictEqual(
+    resolveClientOriginFromRequest(
+      { headers: { origin: [VERCEL_CLIENT, "https://evil.example.com"] } },
+      MULTI_ORIGIN_ENV,
+    ),
+    VERCEL_CLIENT,
+  );
+  assert.strictEqual(
+    resolveClientOriginFromRequest(
+      { headers: { origin: "https://evil.example.com" } },
+      MULTI_ORIGIN_ENV,
+    ),
+    "http://localhost:3000",
+  );
+  assert.strictEqual(
+    resolveClientOriginFromRequest(null, MULTI_ORIGIN_ENV),
+    "http://localhost:3000",
   );
 });

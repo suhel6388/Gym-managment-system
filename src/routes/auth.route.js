@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { setupGym, signup, login, logout, me, verifyEmail, resendOTP, googleSignIn, forgotPassword, resetPassword } from "../controllers/auth.controller.js";
+import { setupGym, signup, login, logout, me, verifyEmail, resendOTP, googleSignIn, forgotPassword, resetPassword, verifyResetToken } from "../controllers/auth.controller.js";
 import { authenticate } from "../middleware/auth.js";
 
 const router = Router();
@@ -12,6 +12,7 @@ router.post("/login", login);
 router.post("/logout", logout);
 router.get("/me", me);
 router.post("/forgot-password", forgotPassword);
+router.get("/reset-password/verify", verifyResetToken);
 router.post("/reset-password", resetPassword);
 router.post("/setup-gym", authenticate, setupGym);
 
