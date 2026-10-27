@@ -2,7 +2,7 @@ import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
-import { sendOTPEmail } from "../lib/email.js";
+import { sendOTPEmail, sendPasswordResetOtpEmail } from "../lib/email.js";
 import { startTrial } from "../services/subscription.service.js";
 import { getClientOrigins, resolveClientOriginFromRequest } from "../lib/origins.js";
 
@@ -429,9 +429,11 @@ export async function login(req, res, next) {
 }
 
 // POST /api/v1/auth/forgot-password — { email, method? }
-// Always answers with the same neutral message so the endpoint cannot be used
-// to enumerate accounts. `method: "link"` (default) emails a reset URL via
-// Better Auth's sendResetPassword hook; `method: "otp"` emails a 6-digit code
+// Always answers with the same neutral message for unknown emails so the
+// endpoint cannot be used to enumerate accounts. When the email exists but
+// SMTP delivery fails, returns 502 so the client shows a real error instead
+// of false success. `method: "link"` (default) emails a reset URL via Better
+// Auth's sendResetPassword hook; `method: "otp"` emails a 6-digit code
 // through the emailOTP plugin (see src/lib/auth.ts).
 export async function forgotPassword(req, res, next) {
   try {
@@ -441,12 +443,27 @@ export async function forgotPassword(req, res, next) {
         ? "If an account exists for this email, a password reset code was sent."
         : "If an account exists for this email, a password reset link was sent.";
 
+    // Never reveal whether the email has an account: unknown emails get the
+    // same neutral response as successfully delivered emails.
+    const user = await prisma.user.findUnique({
+      where: { email: input.email },
+      select: { id: true },
+    });
+    if (!user) {
+      return res.json({ message, method: input.method });
+    }
+
     if (input.method === "otp") {
-      await auth.api.requestPasswordResetEmailOTP({
-        body: { email: input.email },
+      const otp = await auth.api.createVerificationOTP({
+        body: { email: input.email, type: "forget-password" },
         headers: fromNodeHeaders(req.headers),
-        asResponse: true,
       });
+      const emailSent = await sendPasswordResetOtpEmail(input.email, otp);
+      if (!emailSent) {
+        return res.status(502).json({
+          error: "We couldn't send the reset code right now. Please try again in a moment.",
+        });
+      }
     } else {
       await auth.api.requestPasswordReset({
         body: {
@@ -456,8 +473,8 @@ export async function forgotPassword(req, res, next) {
           redirectTo: `${resolveClientOriginFromRequest(req)}/reset-password`,
         },
         headers: fromNodeHeaders(req.headers),
-        asResponse: true,
       });
+      // If sendResetPassword hook threw (SMTP failure), we won't reach here.
     }
 
     return res.json({ message, method: input.method });
@@ -466,14 +483,17 @@ export async function forgotPassword(req, res, next) {
       const first = err?.issues?.[0];
       return res.status(400).json({ error: first?.message ?? "Validation failed" });
     }
-    // Never surface Better Auth's "user not found" style errors here.
+    // Better Auth "user not found" or validation errors — neutral response.
     if (err?.statusCode ?? err?.status) {
       return res.json({
         message:
           "If an account exists for this email, a password reset link or code was sent.",
       });
     }
-    next(err);
+    // SMTP/delivery failure with no statusCode — report truthfully.
+    return res.status(502).json({
+      error: "We couldn't send the reset email right now. Please try again in a moment.",
+    });
   }
 }
 

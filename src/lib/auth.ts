@@ -85,8 +85,10 @@ export const auth = betterAuth({
      sendVerificationOnSignUp: false,
      async sendVerificationOTP({ email, otp, type }) {
        // Email verification codes and password-reset codes both go through
-       // the SMTP service. Delivery failures are logged rather than thrown so
-       // a reset request cannot reveal whether the account exists.
+       // the SMTP service. Delivery failures are logged AND re-thrown so the
+       // caller can report the truth instead of pretending a code was sent.
+       // The forgot-password controller checks user existence before calling,
+       // so this does not leak account existence.
        try {
          if (type === "email-verification") {
            await sendOTPEmail(email, otp);
@@ -99,6 +101,7 @@ export const auth = betterAuth({
              err instanceof Error ? err.message : String(err)
            }`,
          );
+         throw err;
        }
      },
    }),

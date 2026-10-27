@@ -8,6 +8,16 @@ const smtpPass = process.env.SMTP_PASS;
 const fromAddress =
   process.env.SMTP_FROM || smtpUser || "no-reply@gym-crm.local";
 
+// `secure: true` = implicit TLS (port 465), `false` = STARTTLS (ports 587/2525).
+// Default: true for 465, false otherwise. Override with SMTP_SECURE=true/false.
+const smtpSecureDefault = smtpPort === 465;
+const smtpSecure =
+  process.env.SMTP_SECURE === "true"
+    ? true
+    : process.env.SMTP_SECURE === "false"
+      ? false
+      : smtpSecureDefault;
+
 let transporter: Transporter | null = null;
 
 // Explicit dev/testing switch: EMAIL_LOG_OTPS=true logs OTPs (and reset
@@ -27,7 +37,7 @@ if (!forceConsole && smtpHost && smtpUser && smtpPass) {
   transporter = nodemailer.createTransport({
     host: smtpHost,
     port: smtpPort,
-    secure: smtpPort === 465,
+    secure: smtpSecure,
     auth: { user: smtpUser, pass: smtpPass },
     // Nodemailer's defaults are measured in minutes. Fail fast instead so a
     // blocked SMTP port (Render free blocks 25/465/587) cannot stall signup.
@@ -49,9 +59,12 @@ if (!forceConsole && smtpHost && smtpUser && smtpPass) {
 }
 
 // Render blocks outbound traffic on the standard SMTP ports for free web
-// services. Gmail only listens on 465/587, so it cannot deliver mail from a
-// free Render instance; port 2525 with a provider that supports it does work.
-if (transporter && process.env.RENDER && [25, 465, 587].includes(smtpPort)) {
+// services. Port 2525 (Brevo, SendGrid, Mailgun) works on Render free.
+if (
+  transporter &&
+  process.env.RENDER &&
+  [25, 465, 587].includes(smtpPort)
+) {
   console.warn(
     "[email] Render free web services block outbound SMTP ports 25/465/587. " +
       "If this service is on the free plan, use a provider that supports port 2525 " +
