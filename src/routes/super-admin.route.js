@@ -23,6 +23,7 @@ import {
   getActivity,
 } from "../controllers/super-admin.controller.js";
 import { createAdmin } from "../controllers/super-admin.accounts.controller.js";
+import { createGym, getGymOwners } from "../controllers/super-admin.owners.controller.js";
 import { authenticate, requireSuperAdmin } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 
@@ -43,6 +44,11 @@ router.get("/activity", getActivity);
 // Cross-gym gym directory and detail.
 router.get("/gyms", getGyms);
 router.get("/gyms/:gymId", getGym);
+
+// Owner onboarding: creates a gym + its first OWNER account atomically and
+// applies the platform's trial/paid-plan rules. Also list/search owners.
+router.post("/gyms", mutationLimit, createGym);
+router.get("/owners", getGymOwners);
 
 // Plan catalog (read-only here; plan editing remains on /admin/subscription).
 router.get("/plans", getPlans);

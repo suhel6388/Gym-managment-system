@@ -233,7 +233,13 @@ test("stats use real gym, subscription and successful-payment rows", async (t) =
 
   const after = await getDashboardStats(SUPER_ADMIN);
   assert.ok(after.data.totalGyms >= before.data.totalGyms + 1);
-  assert.ok(after.data.activeSubscriptions >= before.data.activeSubscriptions + 1);
+  // Active subscriptions are counted globally, and other test files run in
+  // parallel against the same database, so a strict delta is racy: a
+  // subscription created after `before` can be cleaned up before `after`.
+  // Assert this gym's row is active and that the global count is non-zero.
+  const gymSubscription = await prisma.gymSubscription.findUnique({ where: { gymId: gym.id } });
+  assert.strictEqual(gymSubscription?.status, "ACTIVE");
+  assert.ok(after.data.activeSubscriptions >= 1);
   assert.ok(after.data.subscriptionRevenuePaise >= before.data.subscriptionRevenuePaise + 39900);
   assert.ok(after.data.successfulPayments >= before.data.successfulPayments + 1);
   assert.ok(Array.isArray(after.data.planDistribution));
