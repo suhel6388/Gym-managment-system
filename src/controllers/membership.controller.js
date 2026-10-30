@@ -23,7 +23,21 @@ export async function listMemberships(req, res, next) {
     const status = ["ACTIVE", "EXPIRED", "FROZEN", "CANCELLED"].includes(req.query.status) ? req.query.status : undefined;
     const data = await prisma.membership.findMany({
       where: { gymId: req.user.gymId, ...(status ? { status } : {}) },
-      include: { member: true, plan: true },
+      include: {
+        // Matches MembershipMemberDto in the client: the memberships screen
+        // never needs addresses, notes or emergency contacts.
+        member: {
+          select: {
+            id: true,
+            memberCode: true,
+            name: true,
+            phone: true,
+            email: true,
+            archivedAt: true
+          }
+        },
+        plan: true
+      },
       orderBy: { endDate: "asc" },
       take: 200
     });

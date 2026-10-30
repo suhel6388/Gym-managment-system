@@ -34,3 +34,43 @@ export async function dueMemberships(req, res, next) {
     res.json({ data });
   } catch (err) { next(err); }
 }
+
+/**
+ * Lightweight join-date feed for the dashboard and reports views.
+ *
+ * Both screens previously fetched the full `/members` collection (up to 500
+ * rows, each with its latest membership and plan) just to count members by
+ * join date. This endpoint returns only the two fields those calculations
+ * need, keeping the payload small and the counts complete beyond the list cap.
+ */
+export async function memberJoins(req, res, next) {
+  try {
+    // The dashboard also labels recent payments with the member's latest plan;
+    // reports only need join dates. Keeping that optional avoids sending a
+    // membership payload the reports screen would discard.
+    const includePlan = req.query.include === "plan";
+
+    const data = await prisma.member.findMany({
+      where: { gymId: req.user.gymId, archivedAt: null },
+      select: {
+        id: true,
+        joinedAt: true,
+        ...(includePlan
+          ? {
+              memberships: {
+                orderBy: { endDate: "desc" },
+                take: 1,
+                select: {
+                  endDate: true,
+                  plan: { select: { id: true, name: true } }
+                }
+              }
+            }
+          : {})
+      },
+      orderBy: { joinedAt: "desc" },
+      take: 20000
+    });
+    res.json({ data });
+  } catch (err) { next(err); }
+}

@@ -15,6 +15,7 @@ import { reconcileExpiredSubscriptions } from "../services/subscription.service.
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 
 let timer = null;
+let initialTimer = null;
 let running = false;
 
 export function startExpiryJob(intervalMs = Number(process.env.SUBSCRIPTION_RECONCILE_INTERVAL_MS) || DEFAULT_INTERVAL_MS) {
@@ -40,13 +41,20 @@ export function startExpiryJob(intervalMs = Number(process.env.SUBSCRIPTION_RECO
     }
   }
 
-  // Run once shortly after startup, then on the interval.
-  setTimeout(tick, 5000);
+  // Run once shortly after startup, then on the interval. Both handles are
+  // kept so stopExpiryJob() (used by tests and graceful shutdown) can cancel
+  // the pending startup tick as well as the interval.
+  initialTimer = setTimeout(tick, 5000);
+  initialTimer.unref?.();
   timer = setInterval(tick, intervalMs);
   timer.unref?.();
 }
 
 export function stopExpiryJob() {
+  if (initialTimer) {
+    clearTimeout(initialTimer);
+    initialTimer = null;
+  }
   if (timer) {
     clearInterval(timer);
     timer = null;

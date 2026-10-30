@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { dashboard, dueMemberships } from "../controllers/reports.controller.js";
+import { dashboard, dueMemberships, memberJoins } from "../controllers/reports.controller.js";
 import {
   authenticate,
   requireGym,
@@ -12,5 +12,6 @@ router.use(authenticate, requireGym, allowReadAndCreateOnly, requireActiveSubscr
 
 router.get("/dashboard", dashboard);
 router.get("/due-memberships", dueMemberships);
+router.get("/member-joins", memberJoins);
 
 export default router;

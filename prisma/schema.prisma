@@ -150,6 +150,9 @@ model Member {
   @@unique([gymId, memberCode])
   @@index([gymId, name])
   @@index([gymId, phone])
+  // Drives the members list and the reports join-date feed, both of which
+  // filter archived rows and sort by joinedAt.
+  @@index([gymId, archivedAt, joinedAt])
 }
 
 model MembershipPlan {
@@ -185,6 +188,9 @@ model Membership {
   allocations      PaymentAllocation[]
 
   @@index([gymId, status, endDate])
+  // The memberships/reports lists filter by gym and sort by endDate without a
+  // status predicate, which the (gymId, status, endDate) index cannot order.
+  @@index([gymId, endDate])
   @@index([memberId, endDate])
 }
 

@@ -37,21 +37,20 @@ function handleMemberError(err, res, next) {
   return handlePrismaError(err, res, next);
 }
 
+/** Number of code collisions tolerated before surfacing the conflict. */
+const AUTO_CODE_ATTEMPTS = 5;
+
 /**
- * Generates a member code that is unique within the gym, e.g. `MEM-0001`.
- * Falls back to a timestamp-based code if the sequential space is exhausted.
+ * Builds the next sequential member code, e.g. `MEM-0001`.
+ *
+ * The `(gymId, memberCode)` unique constraint is the real guard: two requests
+ * that read the same count at the same moment will both try the same code and
+ * one will get P2002. `createMember` retries that collision with a fresh
+ * count, which is cheaper than pre-checking every candidate before inserting.
  */
-async function generateMemberCode(gymId) {
+async function nextMemberCode(gymId) {
   const count = await prisma.member.count({ where: { gymId } });
-  for (let attempt = 0; attempt < 25; attempt += 1) {
-    const code = `MEM-${String(count + 1 + attempt).padStart(4, "0")}`;
-    const exists = await prisma.member.findUnique({
-      where: { gymId_memberCode: { gymId, memberCode: code } },
-      select: { id: true }
-    });
-    if (!exists) return code;
-  }
-  return `MEM-${Date.now().toString(36).toUpperCase()}`;
+  return `MEM-${String(count + 1).padStart(4, "0")}`;
 }
 
 export async function listMembers(req, res, next) {
@@ -101,10 +100,26 @@ export async function listMembers(req, res, next) {
 export async function createMember(req, res, next) {
   try {
     const input = memberInput.parse(req.body);
-    const memberCode = input.memberCode || (await generateMemberCode(req.user.gymId));
-    const data = await prisma.member.create({
-      data: { ...input, memberCode, gymId: req.user.gymId }
-    });
+    const autoCode = !input.memberCode;
+    let data;
+
+    for (let attempt = 0; ; attempt += 1) {
+      const memberCode = input.memberCode || (await nextMemberCode(req.user.gymId));
+      try {
+        data = await prisma.member.create({
+          data: { ...input, memberCode, gymId: req.user.gymId }
+        });
+        break;
+      } catch (err) {
+        // Only an auto-generated code may be retried. A caller-supplied code
+        // that collides is a real 409.
+        if (autoCode && err?.code === "P2002" && attempt < AUTO_CODE_ATTEMPTS - 1) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
     res.status(201).json({ data });
   } catch (err) { handleMemberError(err, res, next); }
 }
