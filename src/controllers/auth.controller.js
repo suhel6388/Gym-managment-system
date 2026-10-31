@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
-import { auth } from "../lib/auth.js";
+import { auth } from "../lib/auth.ts";
 import { prisma } from "../db.js";
-import { sendOTPEmail, sendPasswordResetOtpEmail } from "../lib/email.js";
+import { sendOTPEmail, sendPasswordResetOtpEmail } from "../lib/email.ts";
 import { startTrial } from "../services/subscription.service.js";
-import { getClientOrigins, resolveClientOriginFromRequest } from "../lib/origins.js";
+import { getClientOrigins, resolveClientOriginFromRequest } from "../lib/origins.ts";
 
 const phoneSchema = z
   .string()

@@ -5,8 +5,8 @@
 import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 
-import { auth } from "../lib/auth.js";
-import { resolveClientOriginFromRequest } from "../lib/origins.js";
+import { auth } from "../lib/auth.ts";
+import { resolveClientOriginFromRequest } from "../lib/origins.ts";
 import {
   createGymOwner,
   listGymOwners,

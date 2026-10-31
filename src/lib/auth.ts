@@ -2,8 +2,8 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { emailOTP } from "better-auth/plugins";
 import { Pool } from "pg";
-import {prisma} from "./prisma"
-import { sendOTPEmail, sendPasswordResetEmail, sendPasswordResetOtpEmail } from "./email";
+import { prisma } from "./prisma.ts";
+import { sendOTPEmail, sendPasswordResetEmail, sendPasswordResetOtpEmail } from "./email.ts";
 
 import dotenv from "dotenv";
 import {
@@ -12,7 +12,7 @@ import {
   isCrossSiteFrontend,
   resolvePublicApiOrigin,
   resolveRequestClientOrigin,
-} from "./origins";
+} from "./origins.ts";
 dotenv.config();
 
 // `BETTER_AUTH_URL` must be this API's public origin. `resolvePublicApiOrigin`
