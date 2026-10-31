@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "server",
       script: "npm",
-      args: "start",
+      args: "run start:pm2",
       cwd: __dirname,
       instances: 1,
       autorestart: true,
