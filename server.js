@@ -8,7 +8,7 @@ import {
   isCrossSiteFrontend,
   normalizeOrigin,
   resolvePublicApiOrigin,
-} from "./src/lib/origins.ts";
+} from "./src/lib/origins.js";
 
 if (!process.env.BETTER_AUTH_SECRET || process.env.BETTER_AUTH_SECRET.length < 32) {
   console.error("BETTER_AUTH_SECRET must be configured with at least 32 characters.");
@@ -61,4 +61,3 @@ async function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-
