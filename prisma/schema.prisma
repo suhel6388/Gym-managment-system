@@ -59,6 +59,10 @@ model Gym {
   trialRecords       TrialRecord[]
   subscriptionAuditLogs SubscriptionAuditLog[]
   subscriptionPayments  SubscriptionPayment[]
+
+  // White-labelled membership payment receipts. One row per gym; the unique
+  // gymId makes cross-gym leakage impossible and keeps the upsert idempotent.
+  receiptSettings    GymReceiptSettings?
 }
 
 model User {
@@ -186,6 +190,7 @@ model Membership {
   cancelledAt      DateTime?
   createdAt        DateTime         @default(now())
   allocations      PaymentAllocation[]
+  payments         Payment[]
 
   @@index([gymId, status, endDate])
   // The memberships/reports lists filter by gym and sort by endDate without a
@@ -199,6 +204,11 @@ model Payment {
   gymId          String
   memberId       String
   member         Member        @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  // The membership this payment settles. Optional so legacy payments created
+  // before receipts existed keep working; new payments always set it.
+  membershipId   String?
+  membership     Membership?   @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+  // Amount in paise (minor units), matching Membership.pricePaise.
   amount          Float
   paymentMode    PaymentMode
   receiptNumber  String
@@ -206,11 +216,21 @@ model Payment {
   paymentDate    DateTime
   paidAt         DateTime      @default(now())
   status         String        @default("SUCCESS")
+  // Client-supplied submission key. The (gymId, idempotencyKey) unique index
+  // makes a retried submission return the original payment instead of creating
+  // a second one. NULL keys are allowed for older callers.
+  idempotencyKey String?
+  // Immutable snapshot of what the PDF showed at issue time, so a later plan
+  // price edit cannot rewrite a historical receipt.
+  receiptData    Json?
+  receiptIssuedAt DateTime?
   allocations    PaymentAllocation[]
 
   @@unique([gymId, receiptNumber])
+  @@unique([gymId, idempotencyKey])
   @@index([gymId, paidAt])
   @@index([memberId, paidAt])
+  @@index([membershipId, status])
 }
 
 model PaymentAllocation {
@@ -223,6 +243,39 @@ model PaymentAllocation {
 
   @@unique([paymentId, membershipId])
   @@index([membershipId])
+}
+
+/// Per-gym receipt branding. One row per gym, enforced by the unique gymId.
+/// Images are stored as data URLs so a receipt renders identically after a
+/// redeploy on hosts with an ephemeral filesystem (Render). The API caps the
+/// encoded size before writing.
+model GymReceiptSettings {
+  id                  String   @id @default(cuid())
+  gymId               String   @unique
+  gym                 Gym      @relation(fields: [gymId], references: [id], onDelete: Cascade)
+
+  /// Overrides Gym.name on the receipt when set.
+  gymName             String?
+  tagline             String?
+  address             String?  @db.Text
+  phone               String?
+  email               String?
+  website             String?
+
+  /// Footer / thank-you copy. Falls back to the built-in membership message.
+  footerMessage       String?  @db.Text
+  authorizedSignatory String?
+  /// PNG/JPEG data URL. Optional: the PDF falls back to a gold monogram.
+  signatureDataUrl    String?  @db.Text
+  /// PNG/JPEG data URL. Optional: the PDF falls back to a gold monogram.
+  logoDataUrl         String?  @db.Text
+
+  qrEnabled           Boolean  @default(true)
+  /// Prefix for this gym's receipt numbers, e.g. "DG" → "DG-0001".
+  receiptPrefix       String   @default("RCPT")
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model Expense {

@@ -13,6 +13,8 @@ import memberRoutes from "./routes/members.route.js";
 import planRoutes from "./routes/plans.route.js";
 import membershipRoutes from "./routes/membership.routes.js";
 import paymentRoutes from "./routes/payment.route.js";
+import receiptRoutes from "./routes/receipt.route.js";
+import receiptPublicRoutes from "./routes/receipt.public.route.js";
 import expenseRoutes from "./routes/expenses.route.js";
 import reportRoutes from "./routes/reports.routes.js";
 import attendanceRoutes from "./routes/attendence.route.js";
@@ -68,7 +70,10 @@ app.use(cors({
 }));
 // Better Auth must run before express.json() so its request body is not consumed.
 app.use("/api/auth", toNodeHandler(auth));
-app.use(express.json());
+// Logo/signature uploads are sent as data URLs from Receipt Settings. Each
+// image is capped by the settings schema, and this limit leaves room for both
+// a logo and a signature in one request.
+app.use(express.json({ limit: "8mb" }));
 
 app.get("/api/v1/health", (req, res) => res.json({ status: "ok",
   message: "Api server is working now start testing",
@@ -80,6 +85,10 @@ app.use("/api/v1/members", memberRoutes);
 app.use("/api/v1/attendence", attendanceRoutes);
 app.use("/api/v1/plans", planRoutes);
 app.use("/api/v1/memberships", membershipRoutes);
+// Receipts are mounted before the payments router. Both are gym-scoped and
+// reuse the same authenticated payment rows.
+app.use("/api/v1", receiptPublicRoutes);
+app.use("/api/v1", receiptRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/reports", reportRoutes);

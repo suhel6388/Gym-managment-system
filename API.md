@@ -44,6 +44,11 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [Delete a scheduled call](#delete-a-scheduled-call-delete-apiv1scheduleid)
 - [Role permissions](#role-permissions)
   - [Gym data isolation (`gymId`)](#gym-data-isolation-gymid)
+- [Payment receipts](#payment-receipts)
+  - [`POST /api/v1/payments`](#post-apiv1payments)
+  - [Receipt endpoints](#receipt-endpoints)
+  - [Receipt settings](#receipt-settings)
+  - [Receipt environment variables](#receipt-environment-variables)
 - [Dashboard and reports](#dashboard-and-reports)
   - [`GET /api/v1/reports/dashboard`](#get-apiv1reportsdashboard)
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
@@ -85,6 +90,11 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
 | `SUPER_ADMIN_PASSWORD` | Bootstrap only | New-account password, minimum 12 characters. Required when creating; ignored when promoting an existing account. |
 | `SUPER_ADMIN_NAME` | Bootstrap only | Display name for a newly created platform owner (default `Platform Owner`). |
 | `SUPER_ADMIN_BOOTSTRAP_SECRET` | No | Shared secret for `POST /api/v1/auth/bootstrap-super-admin`. When set, that endpoint requires a matching `x-bootstrap-secret` header. When unset, the endpoint still works in first-run mode (only while no `SUPER_ADMIN` exists). |
+| `RECEIPT_PUBLIC_BASE_URL` | Recommended | Public API origin used inside receipt PDF links, e.g. `https://darkgoldgym.duckdns.org`. Falls back to `PUBLIC_API_URL`, then the request origin. |
+| `RECEIPT_LINK_SECRET` | Recommended | Secret used to sign temporary public receipt links. Falls back to `BETTER_AUTH_SECRET`. |
+| `RECEIPT_LINK_TTL_DAYS` | No | Lifetime of a public receipt link in days (default `7`). |
+| `RECEIPT_PDF_FONT` / `RECEIPT_PDF_FONT_BOLD` | No | Absolute paths to TTF files for PDF text. Default to the bundled PDFKit fonts (which is why the PDF prints `Rs.` instead of `₹`). |
+| `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_API_VERSION` | No | Enable WhatsApp Business Cloud API delivery of the receipt PDF. Server-side only; the browser never sees these values. |
 
 ### 3. Install, migrate, run
 
@@ -102,9 +112,13 @@ Sanity check: `GET http://localhost:5000/api/v1/health` → `{ "status": "ok" }`
 1. In Google Cloud Console, add the authorized redirect URI
    `{BETTER_AUTH_URL}/api/auth/callback/google`. Locally that is
    `http://localhost:5000/api/auth/callback/google`; in production it is the
-   **Render API** host, for example
-   `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`.
+   **API** host, for example
+   `https://darkgoldgym.duckdns.org/api/auth/callback/google` (or
+   `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`).
    Do not add the Vercel URL — the static frontend has no `/api/auth` route.
+   Register every API host you actually serve from: a missing entry produces
+   `Error 400: redirect_uri_mismatch` ("Access blocked: This app's request is
+   invalid") at Google.
 2. Put the client ID/secret in `.env` and restart the backend.
 3. Frontend calls `POST /api/v1/auth/google` with `callbackURL` and
    `errorCallbackURL` on its own origin, then redirects the browser to the
@@ -365,7 +379,9 @@ window.location.href = url; // Google consent -> back to callbackURL with a sess
 - Google Cloud Console must list the **API** callback:
   `{BETTER_AUTH_URL}/api/auth/callback/google`. Locally:
   `http://localhost:5000/api/auth/callback/google`. Production:
-  `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`.
+  `https://darkgoldgym.duckdns.org/api/auth/callback/google` (and
+  `https://gym-managment-system-7yiu.onrender.com/api/auth/callback/google`
+  if that host is still served). The backend logs this exact URI on startup.
 - The Vercel frontend and Render API are different sites. The backend sets
   `SameSite=None; Secure` cookies automatically for that layout; see
   `DEPLOYMENT.md` for browser third-party-cookie caveats.
@@ -3285,6 +3301,149 @@ npm test
 Covers trial eligibility, concurrency-safe duplicate-trial prevention, plan super-admin permissions, tenant isolation, checkout using DB price, server-side expiry/entitlement calculation, and the `/api/v1/super-admin` authorization, isolation, stats, plan/extend/trial/suspension flows.
 
 Expected: `✔ pass 66  ✔ fail 0`.
+
+---
+
+## Payment receipts
+
+Every successful membership payment creates an immutable receipt snapshot in
+the same transaction as the payment. Receipts cover membership fees and related
+charges only — not products, equipment, lockers or personal training.
+
+### `POST /api/v1/payments`
+
+Records one membership payment. This is the only write path the client uses for
+Add Member and Pay Bill.
+
+Headers:
+
+```
+Authorization: Cookie session
+Content-Type: application/json
+Idempotency-Key: rcpt-<uuid>      # optional but recommended
+```
+
+Body:
+
+```json
+{
+  "memberId": "mem_123",
+  "membershipId": "ms_456",
+  "amount": 150000,
+  "paymentMode": "UPI",
+  "reference": "UPI-8842199",
+  "paymentDate": "2026-11-01T10:42:00.000Z",
+  "status": "SUCCESS"
+}
+```
+
+`amount` is in **paise**. `membershipId` is optional for older callers; when it
+is omitted the member's latest membership is used.
+
+`201 Created` (or `200` when the idempotency key already exists):
+
+```json
+{
+  "data": { "id": "pay_789", "receiptNumber": "DG-0042", "...": "..." },
+  "duplicate": false,
+  "receipt": { "receiptNumber": "DG-0042", "fees": {}, "links": {} },
+  "whatsapp": {
+    "phone": "919876543210",
+    "url": "https://wa.me/919876543210?text=...",
+    "message": "Hello Priya Sharma!...",
+    "cloudAvailable": false
+  },
+  "receiptError": null
+}
+```
+
+- A retried `Idempotency-Key` returns the original payment with
+  `duplicate: true`; it never charges twice.
+- The payment commits even when receipt assembly fails. In that case
+  `receipt` is `null` and `receiptError` explains how to retry from Payments.
+- Failed payments (`status !== "SUCCESS"`) never return a receipt.
+
+Errors:
+
+| Status | Code | Meaning |
+|---|---|---|
+| `400` | validation | Amount/mode/member payload invalid |
+| `403` | — | No gym context for the session |
+| `404` | `MEMBER_NOT_FOUND` / `MEMBERSHIP_NOT_FOUND` | Row is missing **or belongs to another gym** |
+| `409` | `RECEIPT_NUMBER_CONFLICT` | Number allocation raced repeatedly; safe to retry |
+
+### Receipt endpoints
+
+All require a gym session and are scoped to `req.user.gymId`.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/v1/payments/:id/receipt` | JSON payload. `409 PAYMENT_NOT_SUCCESSFUL` for a non-success payment, `404 RECEIPT_NOT_FOUND` for another gym's payment. |
+| `GET` | `/api/v1/payments/:id/receipt/pdf` | PDF stream (`application/pdf`, `no-store`). Same guards. |
+| `POST` | `/api/v1/payments/:id/receipt/whatsapp` | Sends the PDF with the WhatsApp Cloud API. `501 WHATSAPP_NOT_CONFIGURED` when credentials are absent; `502 WHATSAPP_DELIVERY_FAILED` on provider errors. The payment is never modified. |
+| `GET` | `/api/v1/receipts/public/:id/pdf?token=...` | **No session.** The HMAC token (payment id + expiry, default 7 days) is the only credential. Invalid → `401 LINK_INVALID`, expired → `401 LINK_EXPIRED`, token for another id → `403 LINK_SCOPE_MISMATCH`. Rate-limited per IP. |
+
+### Receipt settings
+
+One `GymReceiptSettings` row per gym (unique `gymId`), created on first save.
+
+`GET /api/v1/receipt-settings` returns the raw saved overrides, the effective
+branding after gym-profile fallbacks, and defaults:
+
+```json
+{
+  "data": {
+    "gym": { "id": "gym_1", "name": "DarkGold Gym", "phone": "...", "email": "...", "address": "..." },
+    "settings": { "gymName": null, "tagline": null, "logoDataUrl": null, "qrEnabled": true, "receiptPrefix": "RCPT", "...": "..." },
+    "branding": { "gymName": "DarkGold Gym", "tagline": "Premium Fitness Club", "footerMessage": "Thank you for choosing {gymName}!...", "...": "..." },
+    "defaults": { "tagline": "Premium Fitness Club", "footerMessage": "...", "receiptPrefix": "RCPT", "paymentModes": { "CASH": "Cash" } }
+  }
+}
+```
+
+`PUT /api/v1/receipt-settings` upserts the row. Owners/settings managers only;
+staff receive `403`.
+
+```json
+{
+  "gymName": "DarkGold Gym",
+  "tagline": "Premium Fitness Club",
+  "address": "12 MG Road, Bengaluru",
+  "phone": "+91 98765 43210",
+  "email": "hello@darkgoldgym.com",
+  "website": "www.darkgoldgym.com",
+  "footerMessage": "Thank you for choosing {gymName}, {memberName}!",
+  "authorizedSignatory": "Arjun Mehta",
+  "logoDataUrl": "data:image/png;base64,...",
+  "signatureDataUrl": "data:image/png;base64,...",
+  "qrEnabled": true,
+  "receiptPrefix": "DG"
+}
+```
+
+Images must be PNG/JPEG data URLs under ~2 MB encoded. `footerMessage`
+supports `{gymName}` / `{memberName}` (also `{{...}}` and `snake_case`).
+Receipt numbers are `<prefix>-0001`, unique per gym. Existing receipts keep
+their snapshot, so editing branding or plan prices never rewrites history.
+
+### Receipt environment variables
+
+```dotenv
+RECEIPT_PUBLIC_BASE_URL=https://darkgoldgym.duckdns.org
+RECEIPT_LINK_SECRET=<long random string>
+RECEIPT_LINK_TTL_DAYS=7
+# Optional custom fonts for ₹ support in the PDF:
+# RECEIPT_PDF_FONT=/absolute/path/Regular.ttf
+# RECEIPT_PDF_FONT_BOLD=/absolute/path/Bold.ttf
+# Optional WhatsApp Business Cloud API document delivery:
+# WHATSAPP_ACCESS_TOKEN=...
+# WHATSAPP_PHONE_NUMBER_ID=...
+# WHATSAPP_API_VERSION=v21.0
+```
+
+`RECEIPT_PUBLIC_BASE_URL` falls back to `PUBLIC_API_URL`, then the request
+origin. The fallback is fine for local testing but must be the public API origin
+in production, otherwise WhatsApp recipients get a `localhost` link.
 
 ---
 

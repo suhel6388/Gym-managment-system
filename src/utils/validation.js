@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { Timing, PaymentMode } from "../../generated/prisma/client"
+import { parseImageDataUrl } from "../services/receipt.service.js";
 
 export const memberInput = z.object({
   memberCode: z.string().trim().min(1).max(50).optional(),
@@ -91,11 +92,63 @@ export const planInput = z.object({
 
 export const paymentInput = z.object({
   memberId: z.string().trim().min(1),
-  amount: z.number().nonnegative(),
+  /** Which membership this payment settles. Optional for legacy callers. */
+  membershipId: z.string().trim().min(1).nullable().optional(),
+  /** Amount in paise (minor units), matching Membership.pricePaise. */
+  amount: z
+    .number({ error: "Enter a valid payment amount" })
+    .int("Amount must be a whole number of paise")
+    .positive("Enter a payment amount greater than zero"),
   paymentMode: z.nativeEnum(PaymentMode),
   reference: z.string().trim().max(191).nullable().optional(),
   paymentDate: z.coerce.date().optional(),
   status: z.string().trim().max(40).optional(),
+  /** Client submission key; also accepted as the Idempotency-Key header. */
+  idempotencyKey: z.string().trim().min(8).max(120).nullable().optional(),
+});
+
+/** Empty text from a form becomes NULL instead of a blank string. */
+const optionalReceiptText = (max) =>
+  z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? null : value,
+    z.string().trim().max(max).nullable().optional(),
+  );
+
+const receiptImageDataUrl = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  z
+    .string()
+    .max(2_800_000, "Image must be smaller than about 2 MB")
+    .refine(
+      (value) => !value || parseImageDataUrl(value),
+      "Upload a PNG or JPEG image",
+    )
+    .nullable()
+    .optional(),
+);
+
+export const receiptSettingsInput = z.object({
+  gymName: optionalReceiptText(120),
+  tagline: optionalReceiptText(120),
+  address: optionalReceiptText(500),
+  phone: optionalReceiptText(30),
+  email: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? null : value,
+    z
+      .email("Enter a valid email address")
+      .max(191)
+      .nullable()
+      .optional(),
+  ),
+  website: optionalReceiptText(191),
+  footerMessage: optionalReceiptText(600),
+  authorizedSignatory: optionalReceiptText(120),
+  signatureDataUrl: receiptImageDataUrl,
+  logoDataUrl: receiptImageDataUrl,
+  qrEnabled: z.boolean().optional(),
+  receiptPrefix: z.string().trim().min(1).max(12).optional(),
 });
 
 export const idParam = z.object({

@@ -20,6 +20,12 @@ const publicApiOrigin = resolvePublicApiOrigin();
 const configuredAuthOrigin = normalizeOrigin(process.env.BETTER_AUTH_URL);
 
 console.log(`[auth] Public API origin: ${publicApiOrigin}`);
+// Google rejects any callback that is not registered on the OAuth client with
+// "Access blocked: This app's request is invalid / redirect_uri_mismatch", so
+// print the exact value to copy into Google Cloud Console.
+console.log(
+  `[auth] Google redirect URI (must be registered): ${publicApiOrigin}/api/auth/callback/google`,
+);
 if (configuredAuthOrigin && configuredAuthOrigin !== publicApiOrigin) {
   console.warn(
     `[auth] BETTER_AUTH_URL is ${configuredAuthOrigin}, which is not this API's public origin. ` +
