@@ -26,6 +26,13 @@ import { createAdmin } from "../controllers/super-admin.accounts.controller.js";
 import { createGym, getGymOwners } from "../controllers/super-admin.owners.controller.js";
 import { authenticate, requireSuperAdmin } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
+import {
+  getAiSettings,
+  updateAiSettings,
+  getGymQuota,
+  setGymCustomLimit,
+  resetGymUsage,
+} from "../services/ai-settings.store.js";
 
 const router = Router();
 
@@ -63,5 +70,32 @@ router.patch("/gyms/:gymId/access", mutationLimit, updateGymAccess);
 // Platform-owner accounts (maximum two). Requires an existing SUPER_ADMIN
 // session; creates the second owner already verified, with no OTP step.
 router.post("/admins", mutationLimit, createAdmin);
+
+// AI Assistant Super Admin Controls (question quota & model settings)
+router.get("/ai-settings", (req, res) => {
+  res.json({ success: true, data: getAiSettings() });
+});
+
+router.put("/ai-settings", mutationLimit, (req, res) => {
+  const updated = updateAiSettings(req.body);
+  res.json({ success: true, data: updated });
+});
+
+router.get("/gyms/:gymId/ai-quota", (req, res) => {
+  const quota = getGymQuota(req.params.gymId);
+  res.json({ success: true, data: quota });
+});
+
+router.put("/gyms/:gymId/ai-quota", mutationLimit, (req, res) => {
+  const { customLimit, resetUsage } = req.body;
+  if (resetUsage) {
+    resetGymUsage(req.params.gymId);
+  }
+  if (typeof customLimit === "number") {
+    setGymCustomLimit(req.params.gymId, customLimit);
+  }
+  const quota = getGymQuota(req.params.gymId);
+  res.json({ success: true, data: quota });
+});
 
 export default router;

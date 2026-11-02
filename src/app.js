@@ -24,6 +24,7 @@ import adminSubscriptionRoutes from "./routes/admin.subscription.route.js";
 import superAdminRoutes from "./routes/super-admin.route.js";
 import scheduleCallRoutes from "./routes/scheduleCall.route.js"
 import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
+import aiAssistantRoutes from "./routes/ai-assistant.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { getClientOrigins } from "./lib/origins.ts";
@@ -96,6 +97,7 @@ app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/reports", reportRoutes);
 app.use("/api/v1/staff", staffRoutes);
+app.use("/api/v1/ai-assistant", aiAssistantRoutes);
 
 // SaaS subscription & billing routes.
 app.use("/api/v1/subscription", subscriptionRoutes);
