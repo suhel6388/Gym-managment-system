@@ -98,9 +98,6 @@ export async function listPayments(req, res, next) {
       where: { gymId: req.user.gymId },
       include: {
         member: { select: { id: true, name: true, memberCode: true, phone: true } },
-        membership: {
-          select: { id: true, plan: { select: { id: true, name: true } } },
-        },
       },
       orderBy: { paidAt: "desc" },
       take: 200,

@@ -1,20 +1,21 @@
-FROM node
+
+FROM node:22
 
 WORKDIR /app
 
+# Install Git
 RUN apt-get update && apt-get install -y git
 
-# Clone latest backend repository
-RUN git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git /tmp/repo
+# Clone latest GitHub repository
+RUN git clone https://github.com/suhel6388/Gym-managment-system.git .
 
-WORKDIR /tmp/repo/backend
+# Move into backend directory
+WORKDIR /app/backend
 
-COPY --from=0 /tmp/repo/backend/package*.json ./
-
+# Install dependencies
 RUN npm install
 
-COPY --from=0 /tmp/repo/backend ./
-
+# Generate Prisma client
 RUN npx prisma generate
 
 EXPOSE 5000

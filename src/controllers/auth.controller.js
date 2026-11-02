@@ -131,7 +131,15 @@ export function forwardCookies(authResponse, res) {
       ? [authResponse.headers.get("set-cookie")]
       : []);
   for (const cookie of cookies) {
-    if (cookie) res.append("Set-Cookie", cookie);
+    if (cookie) {
+      let finalCookie = cookie;
+      if (!finalCookie.toLowerCase().includes("samesite=")) {
+        finalCookie += "; SameSite=None; Secure; Partitioned";
+      } else if (finalCookie.toLowerCase().includes("samesite=lax")) {
+        finalCookie = finalCookie.replace(/samesite=lax/gi, "SameSite=None; Secure; Partitioned");
+      }
+      res.append("Set-Cookie", finalCookie);
+    }
   }
 }
 
@@ -598,14 +606,34 @@ export async function logout(req, res, next) {
 // GET /api/v1/auth/me
 export async function me(req, res, next) {
   try {
-    const session = await auth.api.getSession({
+    let session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
     });
-    if (!session?.user) {
+    let sessionUserId = session?.user?.id;
+    let sessionData = session?.session ?? null;
+
+    if (!sessionUserId) {
+      const authHeader = req.headers?.authorization;
+      if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.slice(7).trim();
+        if (token) {
+          const dbSession = await prisma.session.findUnique({
+            where: { token },
+            select: { id: true, token: true, userId: true, expiresAt: true },
+          });
+          if (dbSession && dbSession.expiresAt > new Date()) {
+            sessionUserId = dbSession.userId;
+            sessionData = dbSession;
+          }
+        }
+      }
+    }
+
+    if (!sessionUserId) {
       return res.status(401).json({ error: "Authentication required" });
     }
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: sessionUserId },
       select: {
         id: true,
         name: true,
@@ -619,7 +647,7 @@ export async function me(req, res, next) {
     // `emailVerified` is included so the client can route an unverified
     // session to the OTP screen. Gym data endpoints are still gated by the
     // authenticate middleware, which rejects unverified users outright.
-    return res.json({ data: { user: user ?? session.user, session: session.session ?? null } });
+    return res.json({ data: { user: user ?? session?.user, session: sessionData } });
   } catch (err) {
     next(err);
   }

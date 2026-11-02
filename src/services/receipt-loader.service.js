@@ -60,16 +60,38 @@ export async function loadReceiptPayload({
   baseUrl,
   now = new Date(),
 }) {
-  const payment = await client.payment.findFirst({
-    where: {
-      id: paymentId,
-      ...(gymId ? { gymId } : {}),
-    },
-    include: {
-      member: true,
-      membership: { include: { plan: true } },
-    },
-  });
+  let payment;
+  try {
+    payment = await client.payment.findFirst({
+      where: {
+        id: paymentId,
+        ...(gymId ? { gymId } : {}),
+      },
+      include: {
+        member: true,
+        membership: { include: { plan: true } },
+      },
+    });
+  } catch (lookupErr) {
+    // Fallback if client has not generated the membership relation yet
+    payment = await client.payment.findFirst({
+      where: {
+        id: paymentId,
+        ...(gymId ? { gymId } : {}),
+      },
+      include: {
+        member: true,
+      },
+    });
+    if (payment?.membershipId) {
+      payment.membership = await client.membership
+        .findUnique({
+          where: { id: payment.membershipId },
+          include: { plan: true },
+        })
+        .catch(() => null);
+    }
+  }
 
   if (!payment) {
     throw new PaymentDomainError("Receipt not found", 404, "RECEIPT_NOT_FOUND");

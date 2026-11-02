@@ -16,13 +16,33 @@ export {
  */
 export async function authenticate(req, res, next) {
   try {
-    const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
-    if (!session?.user) {
+    let session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+    let sessionUserId = session?.user?.id;
+    let sessionUserEmail = session?.user?.email;
+
+    // Fallback: If cross-site cookie was blocked by the browser, check Bearer token
+    if (!sessionUserId) {
+      const authHeader = req.headers?.authorization;
+      if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.slice(7).trim();
+        if (token) {
+          const dbSession = await prisma.session.findUnique({
+            where: { token },
+            select: { userId: true, expiresAt: true },
+          });
+          if (dbSession && dbSession.expiresAt > new Date()) {
+            sessionUserId = dbSession.userId;
+          }
+        }
+      }
+    }
+
+    if (!sessionUserId) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: sessionUserId },
       select: { id: true, gymId: true, role: true, email: true, emailVerified: true },
     });
 
@@ -39,7 +59,7 @@ export async function authenticate(req, res, next) {
       return res.status(403).json({
         error: "Email not verified. Verify your email to continue.",
         code: "EMAIL_NOT_VERIFIED",
-        email: session.user.email,
+        email: sessionUserEmail ?? user.email,
       });
     }
 
@@ -47,7 +67,7 @@ export async function authenticate(req, res, next) {
       id: user.id,
       gymId: user.gymId,
       role: user.role,
-      email: user.email ?? session.user.email,
+      email: user.email ?? sessionUserEmail,
     };
     next();
   } catch (error) {
