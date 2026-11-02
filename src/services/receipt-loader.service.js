@@ -69,26 +69,18 @@ export async function loadReceiptPayload({
       },
       include: {
         member: true,
-        membership: { include: { plan: true } },
       },
     });
   } catch (lookupErr) {
-    // Fallback if client has not generated the membership relation yet
     payment = await client.payment.findFirst({
       where: {
         id: paymentId,
         ...(gymId ? { gymId } : {}),
       },
-      include: {
-        member: true,
-      },
     });
-    if (payment?.membershipId) {
-      payment.membership = await client.membership
-        .findUnique({
-          where: { id: payment.membershipId },
-          include: { plan: true },
-        })
+    if (payment && payment.memberId) {
+      payment.member = await client.member
+        .findUnique({ where: { id: payment.memberId } })
         .catch(() => null);
     }
   }
@@ -97,10 +89,35 @@ export async function loadReceiptPayload({
     throw new PaymentDomainError("Receipt not found", 404, "RECEIPT_NOT_FOUND");
   }
 
-  const gym = await client.gym.findUnique({
-    where: { id: payment.gymId },
-    include: { receiptSettings: true },
-  });
+  if (payment.membershipId) {
+    payment.membership = await client.membership
+      .findUnique({
+        where: { id: payment.membershipId },
+        include: { plan: true },
+      })
+      .catch(() => null);
+  } else if (!payment.membership && payment.memberId) {
+    payment.membership = await client.membership
+      .findFirst({
+        where: { gymId: payment.gymId, memberId: payment.memberId },
+        orderBy: { endDate: "desc" },
+        include: { plan: true },
+      })
+      .catch(() => null);
+  }
+
+  let gym;
+  try {
+    gym = await client.gym.findUnique({
+      where: { id: payment.gymId },
+      include: { receiptSettings: true },
+    });
+  } catch {
+    gym = await client.gym.findUnique({
+      where: { id: payment.gymId },
+    });
+    if (gym) gym.receiptSettings = null;
+  }
   if (!gym) {
     throw new PaymentDomainError("Gym not found", 404, "GYM_NOT_FOUND");
   }

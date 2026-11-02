@@ -151,6 +151,17 @@ async function forwardAuthResponse(authResponse, res) {
   } catch {
     body = null;
   }
+  if (body && typeof body === "object") {
+    if (!body.token && !body.session?.token) {
+      const setCookie = authResponse.headers.get("set-cookie") || "";
+      const match = setCookie.match(/better-auth\.session_token=([^;]+)/);
+      if (match) {
+        const raw = decodeURIComponent(match[1]);
+        const cleanToken = raw.split(".")[0];
+        body.token = cleanToken;
+      }
+    }
+  }
   return res.status(authResponse.status).json(body ?? {});
 }
 
@@ -617,8 +628,11 @@ export async function me(req, res, next) {
       if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
         const token = authHeader.slice(7).trim();
         if (token) {
-          const dbSession = await prisma.session.findUnique({
-            where: { token },
+          const cleanToken = token.split(".")[0];
+          const dbSession = await prisma.session.findFirst({
+            where: {
+              OR: [{ token }, { token: cleanToken }],
+            },
             select: { id: true, token: true, userId: true, expiresAt: true },
           });
           if (dbSession && dbSession.expiresAt > new Date()) {
@@ -644,10 +658,14 @@ export async function me(req, res, next) {
         emailVerified: true,
       },
     });
-    // `emailVerified` is included so the client can route an unverified
-    // session to the OTP screen. Gym data endpoints are still gated by the
-    // authenticate middleware, which rejects unverified users outright.
-    return res.json({ data: { user: user ?? session?.user, session: sessionData } });
+    const sessionToken = sessionData?.token ?? (session?.session?.token ?? null);
+    return res.json({
+      data: {
+        user: user ?? session?.user,
+        session: sessionData ?? session?.session ?? null,
+        token: sessionToken,
+      },
+    });
   } catch (err) {
     next(err);
   }

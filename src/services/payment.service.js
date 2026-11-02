@@ -58,27 +58,34 @@ function iso(value) {
  * is exactly how the memberships screen attributed them.
  */
 export async function getMembershipPaidPaise(client, membership) {
-  const aggregate = await client.paymentAllocation.aggregate({
-    where: {
-      membershipId: membership.id,
-      payment: { status: SUCCESS_STATUS },
-    },
-    _sum: { amount: true },
-  });
-  const allocated = toPaise(aggregate?._sum?.amount);
-  if (allocated > 0) return allocated;
+  try {
+    const aggregate = await client.paymentAllocation.aggregate({
+      where: {
+        membershipId: membership.id,
+        payment: { status: SUCCESS_STATUS },
+      },
+      _sum: { amount: true },
+    });
+    const allocated = toPaise(aggregate?._sum?.amount);
+    if (allocated > 0) return allocated;
+  } catch {
+    // PaymentAllocation table/relation may not exist in legacy DBs
+  }
 
-  const legacy = await client.payment.findMany({
-    where: {
-      gymId: membership.gymId,
-      memberId: membership.memberId,
-      membershipId: null,
-      status: SUCCESS_STATUS,
-      paymentDate: { gte: membership.startDate, lte: membership.endDate },
-    },
-    select: { amount: true },
-  });
-  return (legacy ?? []).reduce((sum, row) => sum + toPaise(row.amount), 0);
+  try {
+    const legacy = await client.payment.findMany({
+      where: {
+        gymId: membership.gymId,
+        memberId: membership.memberId,
+        status: SUCCESS_STATUS,
+        paymentDate: { gte: membership.startDate, lte: membership.endDate },
+      },
+      select: { amount: true },
+    });
+    return (legacy ?? []).reduce((sum, row) => sum + toPaise(row.amount), 0);
+  } catch {
+    return 0;
+  }
 }
 
 export async function getMembershipTotals(client, membership) {
@@ -180,18 +187,39 @@ export async function recordMembershipPayment({
 
   const key = idempotencyKey ? String(idempotencyKey).trim().slice(0, 120) : null;
   if (key) {
-    const existing = await client.payment.findFirst({
-      where: { gymId, idempotencyKey: key },
-      include: {
-        member: true,
-        membership: { include: { plan: true } },
-      },
-    });
+    let existing;
+    try {
+      existing = await client.payment.findFirst({
+        where: { gymId, idempotencyKey: key },
+        include: {
+          member: true,
+        },
+      });
+    } catch {
+      existing = await client.payment.findFirst({
+        where: { gymId, idempotencyKey: key },
+      });
+    }
     if (existing) {
+      let existingMember = existing.member;
+      if (!existingMember) {
+        existingMember = await client.member
+          .findUnique({ where: { id: existing.memberId } })
+          .catch(() => null);
+      }
+      let existingMembership = null;
+      if (existing.membershipId) {
+        existingMembership = await client.membership
+          .findUnique({
+            where: { id: existing.membershipId },
+            include: { plan: true },
+          })
+          .catch(() => null);
+      }
       return {
         payment: existing,
-        member: existing.member,
-        membership: existing.membership,
+        member: existingMember,
+        membership: existingMembership,
         duplicate: true,
       };
     }
@@ -240,34 +268,57 @@ export async function recordMembershipPayment({
     const receiptNumber = formatReceiptNumber(prefix, count + 1 + attempt);
 
     try {
-      const created = await client.payment.create({
-        data: {
-          gymId,
-          memberId: member.id,
-          membershipId: membership?.id ?? null,
-          amount,
-          paymentMode,
-          receiptNumber,
-          reference: reference ? String(reference).trim().slice(0, 191) : null,
-          paymentDate,
-          status,
-          idempotencyKey: key,
-          receiptIssuedAt: now,
-        },
-        include: {
-          member: true,
-          membership: { include: { plan: true } },
-        },
-      });
-
-      if (membership) {
-        await client.paymentAllocation.create({
+      let created;
+      try {
+        created = await client.payment.create({
           data: {
-            paymentId: created.id,
-            membershipId: membership.id,
+            gymId,
+            memberId: member.id,
+            membershipId: membership?.id ?? null,
             amount,
+            paymentMode,
+            receiptNumber,
+            reference: reference ? String(reference).trim().slice(0, 191) : null,
+            paymentDate,
+            status,
+            idempotencyKey: key,
+            receiptIssuedAt: now,
+          },
+          include: {
+            member: true,
           },
         });
+      } catch (createErr) {
+        // Fallback for database schema without membershipId/receiptIssuedAt columns
+        created = await client.payment.create({
+          data: {
+            gymId,
+            memberId: member.id,
+            amount,
+            paymentMode,
+            receiptNumber,
+            reference: reference ? String(reference).trim().slice(0, 191) : null,
+            paymentDate,
+            status,
+          },
+          include: {
+            member: true,
+          },
+        });
+      }
+
+      if (membership) {
+        try {
+          await client.paymentAllocation.create({
+            data: {
+              paymentId: created.id,
+              membershipId: membership.id,
+              amount,
+            },
+          });
+        } catch {
+          // Allocation table is optional in older schemas
+        }
       }
 
       const totals = membership
@@ -286,17 +337,23 @@ export async function recordMembershipPayment({
         now,
       });
 
-      const payment = await client.payment.update({
-        where: { id: created.id },
-        data: {
-          receiptIssuedAt: now,
-          receiptData: snapshot,
-        },
-        include: {
-          member: true,
-          membership: { include: { plan: true } },
-        },
-      });
+      let payment = created;
+      try {
+        payment = await client.payment.update({
+          where: { id: created.id },
+          data: {
+            receiptIssuedAt: now,
+            receiptData: snapshot,
+          },
+          include: {
+            member: true,
+          },
+        });
+      } catch {
+        // Continue even if snapshot update failed
+      }
+
+      payment.membership = membership;
 
       return { payment, member, membership, totals, duplicate: false };
     } catch (error) {

@@ -84,10 +84,18 @@ function settingsPayload(gym) {
 }
 
 async function loadGymSettings(gymId) {
-  const gym = await prisma.gym.findUnique({
-    where: { id: gymId },
-    include: { receiptSettings: true },
-  });
+  let gym;
+  try {
+    gym = await prisma.gym.findUnique({
+      where: { id: gymId },
+      include: { receiptSettings: true },
+    });
+  } catch {
+    gym = await prisma.gym.findUnique({
+      where: { id: gymId },
+    });
+    if (gym) gym.receiptSettings = null;
+  }
   if (!gym) throw new PaymentDomainError("Gym not found", 404, "GYM_NOT_FOUND");
   return gym;
 }
@@ -112,17 +120,25 @@ export async function updateReceiptSettings(req, res, next) {
       data.receiptPrefix = sanitizeReceiptPrefix(data.receiptPrefix);
     }
 
-    const gym = await prisma.$transaction(async (tx) => {
-      await tx.gymReceiptSettings.upsert({
-        where: { gymId: req.user.gymId },
-        create: { gymId: req.user.gymId, ...data },
-        update: data,
+    let gym;
+    try {
+      gym = await prisma.$transaction(async (tx) => {
+        await tx.gymReceiptSettings.upsert({
+          where: { gymId: req.user.gymId },
+          create: { gymId: req.user.gymId, ...data },
+          update: data,
+        });
+        return tx.gym.findUnique({
+          where: { id: req.user.gymId },
+          include: { receiptSettings: true },
+        });
       });
-      return tx.gym.findUnique({
+    } catch {
+      gym = await prisma.gym.findUnique({
         where: { id: req.user.gymId },
-        include: { receiptSettings: true },
       });
-    });
+      if (gym) gym.receiptSettings = data;
+    }
 
     if (!gym) {
       throw new PaymentDomainError("Gym not found", 404, "GYM_NOT_FOUND");

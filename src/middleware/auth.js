@@ -26,8 +26,11 @@ export async function authenticate(req, res, next) {
       if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
         const token = authHeader.slice(7).trim();
         if (token) {
-          const dbSession = await prisma.session.findUnique({
-            where: { token },
+          const cleanToken = token.split(".")[0];
+          const dbSession = await prisma.session.findFirst({
+            where: {
+              OR: [{ token }, { token: cleanToken }],
+            },
             select: { userId: true, expiresAt: true },
           });
           if (dbSession && dbSession.expiresAt > new Date()) {
