@@ -2,7 +2,7 @@
 
 A multi-tenant **gym CRM backend** built with Node.js, Express and PostgreSQL. Gym owners can manage members, plans, memberships, attendance, payments and expenses. Platform owners can run the whole thing as a **SaaS business** with subscriptions, free trials and a super-admin console.
 
-> **Prices are stored in paise** (₹499 = `49900`) to avoid floating-point errors.
+
 
 ---
 
