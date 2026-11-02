@@ -7,22 +7,7 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, "../../data");
 const SETTINGS_FILE = path.join(DATA_DIR, "ai-assistant-settings.json");
 
-type GymQuotaState = {
-  questionsUsed: number;
-  customLimit?: number;
-  lastResetDate: string; // YYYY-MM-DD
-};
-
-type AiSettingsData = {
-  defaultQuestionLimit: number;
-  model: string;
-  apiKey: string;
-  enabled: boolean;
-  systemPromptOverride?: string;
-  gyms: Record<string, GymQuotaState>;
-};
-
-function getTodayString(): string {
+function getTodayString() {
   const d = new Date();
   const year = d.getFullYear();
   const month = `${d.getMonth() + 1}`.padStart(2, "0");
@@ -30,7 +15,7 @@ function getTodayString(): string {
   return `${year}-${month}-${day}`;
 }
 
-const DEFAULT_SETTINGS: AiSettingsData = {
+const DEFAULT_SETTINGS = {
   defaultQuestionLimit: 3,
   model: process.env.GEMINI_MODEL || "gemini-1.5-flash",
   apiKey: process.env.GEMINI_API_KEY || "",
@@ -38,9 +23,9 @@ const DEFAULT_SETTINGS: AiSettingsData = {
   gyms: {},
 };
 
-let inMemorySettings: AiSettingsData | null = null;
+let inMemorySettings = null;
 
-function ensureDataDir(): void {
+function ensureDataDir() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -50,7 +35,7 @@ function ensureDataDir(): void {
   }
 }
 
-function loadSettings(): AiSettingsData {
+function loadSettings() {
   if (inMemorySettings) return inMemorySettings;
 
   ensureDataDir();
@@ -64,7 +49,7 @@ function loadSettings(): AiSettingsData {
         apiKey: parsed.apiKey || process.env.GEMINI_API_KEY || "",
         model: parsed.model || process.env.GEMINI_MODEL || "gemini-1.5-flash",
       };
-      return inMemorySettings!;
+      return inMemorySettings;
     }
   } catch (err) {
     console.error("[ai-settings] Error reading settings file, using defaults:", err);
@@ -75,7 +60,7 @@ function loadSettings(): AiSettingsData {
   return inMemorySettings;
 }
 
-function saveSettings(settings: AiSettingsData): void {
+function saveSettings(settings) {
   inMemorySettings = settings;
   ensureDataDir();
   try {
@@ -100,12 +85,7 @@ export function getAiSettings() {
   };
 }
 
-export function updateAiSettings(updates: Partial<{
-  defaultQuestionLimit: number;
-  model: string;
-  apiKey: string;
-  enabled: boolean;
-}>) {
+export function updateAiSettings(updates = {}) {
   const current = loadSettings();
   if (typeof updates.defaultQuestionLimit === "number" && updates.defaultQuestionLimit > 0) {
     current.defaultQuestionLimit = updates.defaultQuestionLimit;
@@ -123,10 +103,10 @@ export function updateAiSettings(updates: Partial<{
   return getAiSettings();
 }
 
-export function getGymQuota(gymId: string) {
+export function getGymQuota(gymId) {
   const settings = loadSettings();
   const today = getTodayString();
-  const gymState: GymQuotaState = settings.gyms[gymId] || {
+  const gymState = settings.gyms[gymId] || {
     questionsUsed: 0,
     lastResetDate: today,
   };
@@ -152,10 +132,10 @@ export function getGymQuota(gymId: string) {
   };
 }
 
-export function incrementGymQuota(gymId: string) {
+export function incrementGymQuota(gymId) {
   const settings = loadSettings();
   const today = getTodayString();
-  const gymState: GymQuotaState = settings.gyms[gymId] || {
+  const gymState = settings.gyms[gymId] || {
     questionsUsed: 0,
     lastResetDate: today,
   };
@@ -182,10 +162,10 @@ export function incrementGymQuota(gymId: string) {
   };
 }
 
-export function setGymCustomLimit(gymId: string, customLimit: number) {
+export function setGymCustomLimit(gymId, customLimit) {
   const settings = loadSettings();
   const today = getTodayString();
-  const gymState: GymQuotaState = settings.gyms[gymId] || {
+  const gymState = settings.gyms[gymId] || {
     questionsUsed: 0,
     lastResetDate: today,
   };
@@ -197,10 +177,10 @@ export function setGymCustomLimit(gymId: string, customLimit: number) {
   return getGymQuota(gymId);
 }
 
-export function resetGymUsage(gymId: string) {
+export function resetGymUsage(gymId) {
   const settings = loadSettings();
   const today = getTodayString();
-  const gymState: GymQuotaState = settings.gyms[gymId] || {
+  const gymState = settings.gyms[gymId] || {
     questionsUsed: 0,
     lastResetDate: today,
   };
@@ -213,7 +193,7 @@ export function resetGymUsage(gymId: string) {
   return getGymQuota(gymId);
 }
 
-export function getRawApiKey(): string {
+export function getRawApiKey() {
   if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
     return process.env.GEMINI_API_KEY.trim();
   }
@@ -221,7 +201,6 @@ export function getRawApiKey(): string {
   return (settings.apiKey || "").trim();
 }
 
-export function getSelectedModel(): string {
+export function getSelectedModel() {
   return process.env.GEMINI_MODEL?.trim() || loadSettings().model || "gemini-1.5-flash";
 }
-

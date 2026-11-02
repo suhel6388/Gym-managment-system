@@ -10,13 +10,7 @@ import {
   generateDeterministicAnswer,
 } from "./gym-ai-context.service.js";
 
-export async function askGymAiAssistant({
-  gymId,
-  message,
-}: {
-  gymId: string;
-  message: string;
-}) {
+export async function askGymAiAssistant({ gymId, message }) {
   const quota = getGymQuota(gymId);
   if (!quota.canAsk) {
     return {
@@ -38,7 +32,7 @@ export async function askGymAiAssistant({
   if (apiKey) {
     try {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      
+
       const payload = {
         contents: [
           {
@@ -92,4 +86,3 @@ export async function askGymAiAssistant({
     model: apiKey ? model : "Gym DB Assistant (Live)",
   };
 }
-

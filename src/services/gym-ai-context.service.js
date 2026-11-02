@@ -1,33 +1,6 @@
 import { prisma } from "../db.js";
 
-export type GymSnapshot = {
-  gymName: string;
-  gymPhone: string;
-  todayDateStr: string;
-  todayPayments: {
-    count: number;
-    totalAmount: number;
-    items: Array<{ memberName: string; amount: number; mode: string; receipt: string }>;
-  };
-  todayMembers: {
-    count: number;
-    items: Array<{ name: string; phone: string; timing: string; code: string }>;
-  };
-  todayExpenses: {
-    count: number;
-    totalAmount: number;
-    items: Array<{ name: string; category: string; amount: number }>;
-  };
-  overall: {
-    totalMembers: number;
-    activeMemberships: number;
-    expiringNext7Days: number;
-    monthCollection: number;
-    monthExpenses: number;
-  };
-};
-
-export async function fetchGymSnapshot(gymId: string): Promise<GymSnapshot> {
+export async function fetchGymSnapshot(gymId) {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
   const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
@@ -171,7 +144,7 @@ export async function fetchGymSnapshot(gymId: string): Promise<GymSnapshot> {
   };
 }
 
-export function buildSystemPrompt(snapshot: GymSnapshot): string {
+export function buildSystemPrompt(snapshot) {
   const paymentList = snapshot.todayPayments.items.length > 0
     ? snapshot.todayPayments.items
         .map((p) => `- ${p.memberName}: ₹${p.amount.toLocaleString("en-IN")} via ${p.mode} (Receipt #${p.receipt})`)
@@ -231,8 +204,8 @@ ${expenseList}
 /**
  * Intelligent deterministic answer generator when Gemini API key is not configured or in fallback mode.
  */
-export function generateDeterministicAnswer(question: string, snapshot: GymSnapshot): string {
-  const q = question.toLowerCase();
+export function generateDeterministicAnswer(question, snapshot) {
+  const q = (question || "").toLowerCase();
 
   // Payment / Fee queries
   if (q.includes("payment") || q.includes("fee") || q.includes("collection") || q.includes("revenue")) {
@@ -304,4 +277,3 @@ export function generateDeterministicAnswer(question: string, snapshot: GymSnaps
     `- **Month Collection:** ₹${snapshot.overall.monthCollection.toLocaleString("en-IN")}\n\n` +
     `Ask me specific questions like *"today fee payment"*, *"today joining member"*, or *"today expense report"*.`;
 }
-
