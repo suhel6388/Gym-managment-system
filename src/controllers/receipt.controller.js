@@ -254,11 +254,25 @@ export async function sendPaymentReceiptWhatsApp(req, res, next) {
       });
     }
 
-    const result = await sendReceiptDocument(payload.receipt);
+    // Render the PDF so the Cloud API receives the actual document bytes
+    // (media upload). If rendering fails, sendReceiptDocument falls back to the
+    // signed public link. Neither path can change the committed payment.
+    let pdfBuffer = null;
+    try {
+      pdfBuffer = await generateReceiptPdf(payload.receipt);
+    } catch (error) {
+      console.warn("[receipt] PDF render for WhatsApp failed", {
+        paymentId: id,
+        message: error?.message,
+      });
+    }
+
+    const result = await sendReceiptDocument(payload.receipt, { pdfBuffer });
     res.json({
       data: {
         sent: true,
         provider: "whatsapp_cloud",
+        delivery: result.delivery,
         messageId: result.messageId,
         phone: payload.receipt.whatsapp.phone,
         cloudAvailable: whatsAppConfig().configured,

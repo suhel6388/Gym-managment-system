@@ -40,6 +40,7 @@ export function whatsAppConfig() {
 }
 
 export function buildReceiptDocumentCaption(receipt) {
+  const footer = String(receipt.footerMessage ?? "").trim();
   return [
     `Hello ${receipt.member.name}!`,
     `Payment received at ${receipt.gym.gymName}.`,
@@ -47,16 +48,73 @@ export function buildReceiptDocumentCaption(receipt) {
     `Membership: ${receipt.plan.name}`,
     `Paid: ${formatInr(receipt.payment.amountPaise)} (${receipt.payment.modeLabel})`,
     `Balance: ${formatInr(receipt.fees.balancePaise)}`,
+    ...(footer ? ["", footer] : []),
   ]
     .join("\n")
     .slice(0, 1000);
 }
 
+function graphEndpoint(config, resource) {
+  return `https://graph.facebook.com/${config.apiVersion}/${config.phoneNumberId}/${resource}`;
+}
+
+export function receiptDocumentFileName(receipt) {
+  const safe = String(receipt?.receiptNumber ?? "receipt").replace(
+    /[^A-Za-z0-9._-]/g,
+    "-",
+  );
+  return `Receipt-${safe}.pdf`;
+}
+
+/**
+ * Uploads the PDF to WhatsApp's media endpoint so delivery does not depend on
+ * the receipt link being reachable by Meta's servers. WhatsApp stores the file
+ * for 30 days; the message refers to it by id.
+ *
+ * @returns {Promise<string|null>} media id, or null when the upload failed.
+ */
+async function uploadReceiptMedia(config, buffer, fileName) {
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "application/pdf");
+  form.append(
+    "file",
+    new Blob([buffer], { type: "application/pdf" }),
+    fileName,
+  );
+
+  let response;
+  try {
+    response = await fetch(graphEndpoint(config, "media"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.token}` },
+      body: form,
+    });
+  } catch {
+    return null;
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.id) {
+    console.warn("[whatsapp] receipt media upload failed", {
+      status: response.status,
+      message: payload?.error?.message,
+    });
+    return null;
+  }
+  return payload.id;
+}
+
 /**
  * Sends the receipt PDF as a WhatsApp document message.
- * @returns {Promise<{ messageId: string|null }>}
+ *
+ * When the caller supplies the rendered PDF (`pdfBuffer`), it is uploaded to
+ * the Cloud API first and sent by media id. If the upload fails, delivery falls
+ * back to the signed public link, which Meta fetches itself.
+ *
+ * @returns {Promise<{ messageId: string|null, delivery: "media"|"link" }>}
  */
-export async function sendReceiptDocument(receipt) {
+export async function sendReceiptDocument(receipt, { pdfBuffer = null } = {}) {
   const config = whatsAppConfig();
   if (!config.configured) throw new WhatsAppNotConfiguredError();
 
@@ -68,17 +126,28 @@ export async function sendReceiptDocument(receipt) {
       400,
     );
   }
-  if (!link) {
+
+  const fileName = receiptDocumentFileName(receipt);
+  let mediaId = null;
+  if (Buffer.isBuffer(pdfBuffer) && pdfBuffer.length > 0) {
+    mediaId = await uploadReceiptMedia(config, pdfBuffer, fileName);
+  }
+
+  if (!mediaId && !link) {
     throw new WhatsAppDeliveryError(
-      "Receipt download link is missing. Retry receipt generation.",
+      "Receipt PDF could not be uploaded and no public link is available. Retry receipt generation.",
       500,
     );
   }
 
-  const endpoint = `https://graph.facebook.com/${config.apiVersion}/${config.phoneNumberId}/messages`;
+  const document = mediaId
+    ? { id: mediaId, filename: fileName }
+    : { link, filename: fileName };
+  document.caption = buildReceiptDocumentCaption(receipt);
+
   let response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetch(graphEndpoint(config, "messages"), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.token}`,
@@ -89,11 +158,7 @@ export async function sendReceiptDocument(receipt) {
         recipient_type: "individual",
         to,
         type: "document",
-        document: {
-          link,
-          filename: `Receipt-${receipt.receiptNumber}.pdf`,
-          caption: buildReceiptDocumentCaption(receipt),
-        },
+        document,
       }),
     });
   } catch {
@@ -110,5 +175,8 @@ export async function sendReceiptDocument(receipt) {
     throw new WhatsAppDeliveryError(message);
   }
 
-  return { messageId: payload?.messages?.[0]?.id ?? null };
+  return {
+    messageId: payload?.messages?.[0]?.id ?? null,
+    delivery: mediaId ? "media" : "link",
+  };
 }

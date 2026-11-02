@@ -58,6 +58,9 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         "script-src": ["'self'", "'unsafe-inline'"],
+        // The receipt dialog renders the generated PDF from a blob: URL.
+        "frame-src": ["'self'", "blob:"],
+        "img-src": ["'self'", "data:", "blob:"],
       },
     },
   }),

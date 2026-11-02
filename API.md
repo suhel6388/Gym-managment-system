@@ -3380,7 +3380,7 @@ All require a gym session and are scoped to `req.user.gymId`.
 |---|---|---|
 | `GET` | `/api/v1/payments/:id/receipt` | JSON payload. `409 PAYMENT_NOT_SUCCESSFUL` for a non-success payment, `404 RECEIPT_NOT_FOUND` for another gym's payment. |
 | `GET` | `/api/v1/payments/:id/receipt/pdf` | PDF stream (`application/pdf`, `no-store`). Same guards. |
-| `POST` | `/api/v1/payments/:id/receipt/whatsapp` | Sends the PDF with the WhatsApp Cloud API. `501 WHATSAPP_NOT_CONFIGURED` when credentials are absent; `502 WHATSAPP_DELIVERY_FAILED` on provider errors. The payment is never modified. |
+| `POST` | `/api/v1/payments/:id/receipt/whatsapp` | Renders the PDF, uploads it to the WhatsApp Cloud API media endpoint and sends it as a document to the member's registered number. Falls back to the signed public link if the upload fails. `501 WHATSAPP_NOT_CONFIGURED` when credentials are absent; `502 WHATSAPP_DELIVERY_FAILED` on provider errors. The payment is never modified. |
 | `GET` | `/api/v1/receipts/public/:id/pdf?token=...` | **No session.** The HMAC token (payment id + expiry, default 7 days) is the only credential. Invalid → `401 LINK_INVALID`, expired → `401 LINK_EXPIRED`, token for another id → `403 LINK_SCOPE_MISMATCH`. Rate-limited per IP. |
 
 ### Receipt settings
@@ -3443,17 +3443,47 @@ RECEIPT_LINK_TTL_DAYS=7
 
 `RECEIPT_PUBLIC_BASE_URL` falls back to `PUBLIC_API_URL`, then the request
 origin. The fallback is fine for local testing but must be the public API origin
-in production, otherwise WhatsApp recipients get a `localhost` link.
+in production, otherwise the QR code and the link fallback point at
+`localhost`.
+
+#### WhatsApp Cloud API setup
+
+1. Create a Meta app at <https://developers.facebook.com/apps> and add the
+   **WhatsApp** product.
+2. Copy the **Phone number ID** and a permanent **System User access token**
+   (not the 24-hour test token) into `WHATSAPP_PHONE_NUMBER_ID` and
+   `WHATSAPP_ACCESS_TOKEN`.
+3. Add the member's number as a test recipient while the app is in development,
+   or submit the app for review to message arbitrary numbers.
+4. Set `WHATSAPP_API_VERSION` to the Graph API version shown in the dashboard
+   (default `v21.0`).
+5. Restart the API. `POST /payments/:id/receipt/whatsapp` now uploads the PDF
+   with `POST /{phone-number-id}/media` and sends it with
+   `POST /{phone-number-id}/messages` as a `document` by media id. The file is
+   given a `.pdf` filename and the receipt caption. If the upload fails, the
+   server retries with the signed public link, so a temporary media outage does
+   not block delivery.
+6. WhatsApp failures are isolated: the endpoint returns `501`/`502` and leaves
+   the payment and receipt untouched. The UI keeps the manual `wa.me` share and
+   local PDF download available.
+
+The PDF is generated on the server before the WhatsApp call; the browser never
+receives the access token. All receipts are scoped by `gymId`, and both the
+media upload and message send use the member's normalized phone number
+(`+91` is assumed for bare 10-digit Indian numbers).
 
 ---
 
-## Current integration blockers
+## Receipt UI surfaces
 
-Do not build frontend flows against these routes until their backend handlers and Prisma schema are aligned:
-
-- `/api/v1/members` currently invokes expense handlers and reads/writes expenses, not members.
-- `/api/v1/payments` currently invokes membership handlers; it does not create or list payments.
-- The membership controller uses `FROZEN` and `CANCELLED` statuses, but the Prisma `MembershipStatus` enum currently defines only `ACTIVE`, `EXPIRED`, and `INACTIVE`.
-- The dashboard aggregates `amountPaise` on payments, while the Prisma `Payment` model currently defines `amount`.
-
-These discrepancies are noted so the frontend does not mistake the existing route names for working member/payment APIs or assume the documented expense shape can currently be persisted.
+- **Settings → Receipt branding** edits the gym logo, name, tagline, address,
+  phone, email, website, receipt prefix, authorised signatory, signature image,
+  QR toggle and footer copy. The live preview uses the same payload as the PDF.
+- **Add member** and **Pay bill** show the receipt dialog after a successful
+  payment. It provides an on-screen preview, a rendered PDF preview tab,
+  download, print, copy link and WhatsApp share. The dedicated
+  `/members/add` page and the membership assign/renew drawer use the same
+  dialog.
+- **Payments** exposes **View receipt** for any historical successful payment.
+- The receipt dialog is read-only: a payment is never edited from it, and a
+  failed WhatsApp or PDF request never rolls back the payment.
