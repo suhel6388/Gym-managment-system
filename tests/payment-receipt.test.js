@@ -102,6 +102,12 @@ function makeClient({
         where.id === membership.id
           ? membership
           : null,
+      // `recordMembershipPayment` re-reads the membership for a duplicate
+      // idempotency-key response; the payment row only stores its id.
+      findUnique: async ({ where }) =>
+        where.id === membership.id
+          ? { ...membership, plan: membership.plan }
+          : null,
     },
     paymentAllocation: {
       create: async ({ data }) => {

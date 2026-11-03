@@ -48,3 +48,4 @@ export async function ensureDatabaseSchema() {
     console.warn("[db] Note on schema check:", err?.message || err);
   }
 }
+

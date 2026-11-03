@@ -277,3 +277,8 @@ export function generateDeterministicAnswer(question, snapshot) {
     `- **Month Collection:** ₹${snapshot.overall.monthCollection.toLocaleString("en-IN")}\n\n` +
     `Ask me specific questions like *"today fee payment"*, *"today joining member"*, or *"today expense report"*.`;
 }
+
+
+
+
+

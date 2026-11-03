@@ -6,3 +6,4 @@ node_modules
 /.frontend-src/
 
 /generated/prisma
+data/ai-assistant-settings.json
