@@ -187,7 +187,7 @@ export async function recordMembershipPayment({
 
   const key = idempotencyKey ? String(idempotencyKey).trim().slice(0, 120) : null;
   if (key) {
-    let existing;
+    let existing = null;
     try {
       existing = await client.payment.findFirst({
         where: { gymId, idempotencyKey: key },
@@ -196,9 +196,7 @@ export async function recordMembershipPayment({
         },
       });
     } catch {
-      existing = await client.payment.findFirst({
-        where: { gymId, idempotencyKey: key },
-      });
+      existing = null;
     }
     if (existing) {
       let existingMember = existing.member;

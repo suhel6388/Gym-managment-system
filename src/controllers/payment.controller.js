@@ -126,21 +126,19 @@ export async function createPayment(req, res, next) {
 
     let result;
     try {
-      result = await prisma.$transaction((tx) =>
-        recordMembershipPayment({
-          client: tx,
-          gymId: req.user.gymId,
-          memberId: input.memberId,
-          membershipId: input.membershipId ?? null,
-          amountPaise: input.amount,
-          paymentMode: input.paymentMode,
-          reference: input.reference ?? null,
-          paymentDate: input.paymentDate ?? new Date(),
-          status: input.status ?? "SUCCESS",
-          idempotencyKey,
-          receiptPrefix,
-        }),
-      );
+      result = await recordMembershipPayment({
+        client: prisma,
+        gymId: req.user.gymId,
+        memberId: input.memberId,
+        membershipId: input.membershipId ?? null,
+        amountPaise: input.amount,
+        paymentMode: input.paymentMode,
+        reference: input.reference ?? null,
+        paymentDate: input.paymentDate ?? new Date(),
+        status: input.status ?? "SUCCESS",
+        idempotencyKey,
+        receiptPrefix,
+      });
     } catch (error) {
       if (!isIdempotencyConflict(error) || !idempotencyKey) throw error;
 

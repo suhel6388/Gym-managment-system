@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import app, { publicPath } from "./src/app.js"
 import { prisma } from "./src/db.js";
+import { ensureDatabaseSchema } from "./src/services/db-sync.service.js";
 import {
   getClientOrigins,
   isCrossSiteFrontend,
@@ -47,6 +48,7 @@ const port = Number(process.env.PORT) || 5000;
 const server = app.listen(port, 
   () => {
     console.log(`Gym CRM API running on http://localhost:${port}`);
+    ensureDatabaseSchema().catch(() => {});
 
     const indexHtml = path.join(publicPath, "index.html");
     if (fs.existsSync(indexHtml)) {

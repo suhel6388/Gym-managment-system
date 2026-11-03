@@ -55,5 +55,5 @@ export function errorHandler(err, req, res, next) {
   if (err?.code === "P2025") {
     return res.status(404).json({ error: "Record not found" });
   }
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({ error: err?.message || "Internal server error" });
 }

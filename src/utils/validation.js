@@ -1,6 +1,18 @@
 import { z } from "zod";
 
-import { Timing, PaymentMode } from "../../generated/prisma/client"
+export const Timing = {
+  MORNING: "MORNING",
+  AFTERNOON: "AFTERNOON",
+  EVENING: "EVENING",
+};
+
+export const PaymentMode = {
+  CASH: "CASH",
+  UPI: "UPI",
+  BANK_TRANSFER: "BANK_TRANSFER",
+  CARD: "CARD",
+  OTHER: "OTHER",
+};
 import { parseImageDataUrl } from "../services/receipt.service.js";
 
 export const memberInput = z.object({
