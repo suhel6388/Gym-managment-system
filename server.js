@@ -47,7 +47,7 @@ if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
 const port = Number(process.env.PORT) || 5000;
 const server = app.listen(port, 
   () => {
-    console.log(`Gym CRM API running on http://localhost:${port}`);
+    console.log(`Gym CRM API running on port http://localhost:${port} enjoy!`);
     ensureDatabaseSchema().catch(() => {});
 
     const indexHtml = path.join(publicPath, "index.html");
