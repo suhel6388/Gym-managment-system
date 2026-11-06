@@ -67,10 +67,18 @@ app.use(
   }),
 );
 
-app.use(cors({ 
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    return callback(null, true);
+app.use(
+  cors({ 
+  origin: ( origin, callback) => {
+        if (!origin) {
+        return callback(null, true);
+      }
+
+      // Allow only configured frontend origins
+      if (clientOrigins.includes(origin.replace(/\/$/, ""))) {
+        return callback(null, true);
+      }
+       return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   allowedHeaders: [
     "Content-Type",
@@ -87,15 +95,9 @@ app.use(cors({
 }));
 // Better Auth must run before express.json() so its request body is not consumed.
 app.use("/api/auth", toNodeHandler(auth));
-// Razorpay webhooks verify the signature against the RAW body, so this router
-// must be mounted before express.json() parses the payload. It also has to be
-// mounted before the authenticated `/api/v1/subscription` router, otherwise
-// `authenticate + requireGym` intercepts `/subscription/webhooks` and rejects
-// the provider's unauthenticated request.
+
 app.use("/api/v1/subscription/webhooks", subscriptionWebhookRoutes);
-// Logo/signature uploads are sent as data URLs from Receipt Settings. Each
-// image is capped by the settings schema, and this limit leaves room for both
-// a logo and a signature in one request.
+
 app.use(express.json({ limit: "8mb" }));
 
 app.get("/api/v1/health", (req, res) => res.json({ status: "ok",

@@ -8,7 +8,7 @@
  * has no API route. These helpers normalize the configured values and recover
  * the public API origin from Render's own URL when that mistake is detected.
  */
-
+import { env } from "node:process";
 export type AuthEnv = Record<string, string | undefined>;
 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
@@ -46,14 +46,7 @@ export function getClientOrigins(env: AuthEnv = process.env): string[] {
   return configured.length > 0 ? configured : ["http://localhost:3000"];
 }
 
-/**
- * Frontend origin to embed in an emailed link.
- *
- * Prefers the `Origin`/`Referer` of the request that triggered the email when
- * it belongs to a configured client origin, so a user on any allowed
- * deployment receives a link back to that same deployment. Falls back to the
- * first configured client origin.
- */
+
 export function resolveRequestClientOrigin(
   request?: Request | null,
   env: AuthEnv = process.env
