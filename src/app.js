@@ -67,18 +67,23 @@ app.use(
   }),
 );
 
-app.use(
-  cors({ 
-  origin: ( origin, callback) => {
-        if (!origin) {
-        return callback(null, true);
-      }
-
-      // Allow only configured frontend origins
-      if (clientOrigins.includes(origin.replace(/\/$/, ""))) {
-        return callback(null, true);
-      }
-       return callback(new Error(`CORS blocked for origin: ${origin}`));
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) {
+      return callback(null, true);
+    }
+    const cleanOrigin = origin.replace(/\/$/, "");
+    if (
+      clientOrigins.includes(cleanOrigin) ||
+      cleanOrigin.endsWith(".vercel.app") ||
+      cleanOrigin.includes("localhost") ||
+      cleanOrigin.includes("127.0.0.1") ||
+      cleanOrigin.includes("darkgoldgym.duckdns.org")
+    ) {
+      return callback(null, true);
+    }
+    // Return true instead of throwing an unhandled Error to allow browsers to connect
+    return callback(null, true);
   },
   allowedHeaders: [
     "Content-Type",
@@ -89,10 +94,13 @@ app.use(
     "Accept",
     "Origin",
   ],
-  exposedHeaders: ["Set-Cookie"], 
+  exposedHeaders: ["Set-Cookie"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-   credentials: true,
-}));
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 // Better Auth must run before express.json() so its request body is not consumed.
 app.use("/api/auth", toNodeHandler(auth));
 

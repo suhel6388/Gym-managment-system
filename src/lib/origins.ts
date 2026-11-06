@@ -37,13 +37,34 @@ export function parseOrigins(value?: string | null): string[] {
   return [...new Set(origins)];
 }
 
+const DEFAULT_CLIENT_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://client-gym-iota.vercel.app",
+  "https://darkgoldgym.duckdns.org",
+];
+
 /**
  * Browser origins allowed to call the API. Defaults to the Next.js dev server
- * so local development works without extra configuration.
+ * and production Vercel frontend so cross-site requests work seamlessly.
  */
 export function getClientOrigins(env: AuthEnv = process.env): string[] {
   const configured = parseOrigins(env.CLIENT_ORIGIN);
-  return configured.length > 0 ? configured : ["http://localhost:3000"];
+  return [...new Set([...configured, ...DEFAULT_CLIENT_ORIGINS])];
+}
+
+export function isAllowedClientOrigin(
+  origin?: string | null,
+  env: AuthEnv = process.env
+): boolean {
+  if (!origin) return false;
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return false;
+  const allowed = getClientOrigins(env);
+  if (allowed.includes(normalized)) return true;
+  if (normalized.endsWith(".vercel.app")) return true;
+  if (isLocalOrigin(normalized)) return true;
+  return false;
 }
 
 
