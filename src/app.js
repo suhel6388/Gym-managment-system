@@ -100,7 +100,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 // Better Auth must run before express.json() so its request body is not consumed.
 app.use("/api/auth", toNodeHandler(auth));
 
