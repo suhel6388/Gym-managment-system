@@ -95,7 +95,7 @@ export class AttendanceController {
 
       return res
         .status(201)
-        .json({ data, message: "Member checked in successfully" });
+        .json({ data, message: "Member checked in successfully!" });
     } catch (error) {
       return next(error);
     }
@@ -110,7 +110,7 @@ export class AttendanceController {
         ...input,
       });
 
-      return res.json({ data, message: "Member checked out successfully" });
+      return res.json({ data, message: "Member checked out successfully!" });
     } catch (error) {
       return next(error);
     }
