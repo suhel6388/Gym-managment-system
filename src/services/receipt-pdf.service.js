@@ -91,7 +91,7 @@ function money(paise) {
 function safeText(value, fallback = "") {
   const text = String(value ?? "")
     // The rupee sign is missing from PDFKit's bundled fonts, and gyms may type
-    // it into footer copy. `money()` already uses "Rs.".
+    
     .replace(/\u20b9/g, "Rs. ")
     .replace(/\s+/g, " ")
     .trim();
