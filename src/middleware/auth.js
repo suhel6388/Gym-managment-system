@@ -55,9 +55,7 @@ export async function authenticate(req, res, next) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
-    // A session alone is not enough: accounts must confirm their email before
-    // they can reach any gym data or onboarding endpoint. Google accounts are
-    // created with emailVerified=true by Better Auth.
+  
     if (!user.emailVerified) {
       return res.status(403).json({
         error: "Email not verified. Verify your email to continue.",
@@ -88,10 +86,7 @@ export function requireGym(req, res, next) {
   next();
 }
 
-// SaaS platform owner only. Gym OWNER/ADMIN/RECEPTIONIST users are rejected.
-// The role is never assignable from client input (better-auth marks the
-// `role` additional field input:false); promote a user out-of-band with
-// `node scripts/make-super-admin.mjs <email>`.
+
 export function requireSuperAdmin(req, res, next) {
   if (req.user?.role !== "SUPER_ADMIN") {
     return res.status(403).json({
