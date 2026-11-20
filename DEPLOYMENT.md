@@ -206,17 +206,3 @@ Run `npm run dev` in `backend/` (port 5000) and `npm run dev` in `client/`
 curl -s https://gym-managment-system-7yiu.onrender.com/api/v1/health
 curl -s https://gym-managment-system-7yiu.onrender.com/api/auth/ok
 ```
-
-Then request a Google URL and confirm `redirect_uri` uses the Render host:
-
-```bash
-curl -s -X POST https://gym-managment-system-7yiu.onrender.com/api/v1/auth/google \
-  -H "Content-Type: application/json" \
-  -d '{"callbackURL":"https://client-gym-iota.vercel.app/auth/callback"}'
-```
-
-The returned URL must contain:
-
-```text
-redirect_uri=https%3A%2F%2Fgym-managment-system-7yiu.onrender.com%2Fapi%2Fauth%2Fcallback%2Fgoogle
-```
