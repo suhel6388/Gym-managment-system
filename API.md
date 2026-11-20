@@ -3484,6 +3484,3 @@ media upload and message send use the member's normalized phone number
   download, print, copy link and WhatsApp share. The dedicated
   `/members/add` page and the membership assign/renew drawer use the same
   dialog.
-- **Payments** exposes **View receipt** for any historical successful payment.
-- The receipt dialog is read-only: a payment is never edited from it, and a
-  failed WhatsApp or PDF request never rolls back the payment.
