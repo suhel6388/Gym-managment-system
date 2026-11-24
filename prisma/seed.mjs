@@ -1,6 +1,3 @@
-// Idempotent seed for the SaaS subscription module.
-// Run: npm run seed   (or: npx tsx prisma/seed.mjs)
-// Safe to run repeatedly — plans are upserted by `code`, settings by singleton id.
 
 import { PrismaClient } from "../generated/prisma/client.ts";
 import { PrismaPg } from "@prisma/adapter-pg";
