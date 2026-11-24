@@ -60,13 +60,16 @@ jobs:
               sudo swapon /swapfile || true
             fi
 
-            # 4. Install dependencies & generate Prisma client
+            # 4. Stop running processes to release file locks before installing
+            pm2 delete all 2>/dev/null || true
+
+            # 5. Install dependencies & generate Prisma client
             npm install --no-audit --no-fund
             npx prisma generate || node node_modules/prisma/build/index.js generate
 
-            # 5. Restart PM2 cleanly
-            pm2 delete all || true
+            # 6. Start PM2 cleanly
             pm2 start ecosystem.config.cjs
             pm2 save
+
 
 
