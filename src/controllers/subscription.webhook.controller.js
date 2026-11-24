@@ -67,7 +67,11 @@ export async function handleWebhook(req, res, next) {
     const paymentId = paymentEntity?.id;
 
     try {
-      if (eventType === "payment.captured" || eventType === "payment.authorized") {
+      if (
+        eventType === "payment.captured" ||
+        eventType === "payment.authorized" ||
+        eventType === "order.paid"
+      ) {
         if (orderId && paymentId) {
           await verifyAndActivateFromWebhook(orderId, paymentId);
         }
