@@ -252,7 +252,9 @@ export async function createGymOwner(actor, input) {
     );
   }
 
-  const trialDurationDays = settings?.trialDurationDays ?? 14;
+  const trialDurationDays =
+    settings?.trialDurationDays ??
+    (Number.parseInt(process.env.DEFAULT_TRIAL_DAYS || "7", 10) || 7);
   const trialPricePaise = settings?.trialPricePaise ?? 0;
   const trialStartsAt = plan ? null : now;
   const trialEndsAt = plan ? null : addDays(now, trialDurationDays);

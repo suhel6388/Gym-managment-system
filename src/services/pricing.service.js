@@ -154,3 +154,8 @@ export function rupeesToPaise(rupees) {
 export function paiseToRupees(paise) {
   return (assertPaise(paise, "paise") / 100).toFixed(2);
 }
+
+/** Format integer paise as standard INR currency string. */
+export function formatInrPaise(paise) {
+  return `₹${paiseToRupees(paise)}`;
+}

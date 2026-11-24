@@ -51,8 +51,10 @@ async function getSettingsRow() {
     where: { id: SINGLETON_SETTINGS_ID },
   });
   if (!settings) {
+    const defaultTrial =
+      Number.parseInt(process.env.DEFAULT_TRIAL_DAYS || "7", 10) || 7;
     settings = await prisma.subscriptionSetting.create({
-      data: { id: SINGLETON_SETTINGS_ID },
+      data: { id: SINGLETON_SETTINGS_ID, trialDurationDays: defaultTrial },
     });
   }
   return settings;

@@ -497,7 +497,7 @@ model TrialRecord {
 model SubscriptionSetting {
   id                       String    @id @default("singleton")
   trialEnabled             Boolean   @default(true)
-  trialDurationDays        Int       @default(14)
+  trialDurationDays        Int       @default(7)
   trialPricePaise          Int       @default(0)
   trialRequiresPaymentMethod Boolean  @default(false)
   cancellationPolicy       String    @default("END_OF_PERIOD") // END_OF_PERIOD | IMMEDIATE
