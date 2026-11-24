@@ -54,6 +54,12 @@ This guide describes the backend routes mounted by `src/app.js` and the request 
   - [`GET /api/v1/reports/due-memberships`](#get-apiv1reportsdue-memberships)
 - [Error responses](#error-responses)
 - [SaaS Subscription & Billing](#saas-subscription--billing)
+- [Frontend Payment Gateway Integration Guide](#frontend-payment-gateway-integration-guide)
+  - [1. Architecture and Security Principles](#1-architecture-and-security-principles)
+  - [2. End-to-End Sequence Flow](#2-end-to-end-sequence-flow)
+  - [3. Step-by-Step Frontend Integration](#3-step-by-step-frontend-integration)
+  - [4. Complete React / Next.js Implementation](#4-complete-react--nextjs-implementation)
+  - [5. Gym Member Fee Payments and Instant Receipts](#5-gym-member-fee-payments-and-instant-receipts)
 - [Platform administration (super admin)](#platform-administration-super-admin)
   - [Authorization and bootstrap](#authorization-and-bootstrap)
   - [Dashboard and gym directory](#dashboard-and-gym-directory)
@@ -1870,6 +1876,529 @@ with a `SUBSCRIPTION_REQUIRED` error:
 Login, account access, billing, plan listing, payment history, and renewal
 flows remain accessible when expired. A `CANCELLED` subscription scheduled at
 period end retains access until `currentPeriodEnd`.
+
+---
+
+## Frontend Payment Gateway Integration Guide
+
+This guide explains step-by-step how to integrate and use the payment gateway APIs in the frontend (React, Next.js, or plain JavaScript).
+
+The Gym CRM platform has two distinct payment flows:
+
+1. **SaaS Platform Subscription Payments (Razorpay Gateway):** Gym owners purchasing or renewing their monthly/annual Gym CRM SaaS plan. Handled online via **Razorpay Checkout**.
+2. **Gym Member Fee Payments (Offline / POS Recording):** Gym members paying membership dues at the counter (Cash, UPI, Card, Bank Transfer). Handled via the `/api/v1/payments` API with automated receipt generation and WhatsApp link sharing.
+
+---
+
+### 1. Architecture and Security Principles
+
+To ensure zero security vulnerabilities and fraud prevention:
+
+- **Never compute prices on the frontend:** The frontend only submits `planId` and an optional `couponCode`. All prices, GST (18%), discounts, and totals are computed strictly server-side using database-backed plan records.
+- **Never expose secrets:** `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` reside strictly on the backend. Only the public `keyId` (`rzp_live_...` or `rzp_test_...`) returned from the order creation endpoint is passed to the browser.
+- **Server-side verification:** The frontend never activates a subscription directly. When Razorpay Checkout finishes, the client receives `{ razorpay_order_id, razorpay_payment_id, razorpay_signature }` and posts it to `/verify`. The backend cryptographically verifies the HMAC SHA256 signature using `crypto.timingSafeEqual` and confirms payment capture with Razorpay's API before activating access.
+- **Webhook redundancy:** Even if the user loses connection or closes the tab right after paying on Razorpay before `/verify` runs, the backend webhook (`POST /api/v1/subscription/webhooks/razorpay`) captures the `payment.captured` / `order.paid` event and activates the subscription automatically.
+
+---
+
+### 2. End-to-End Sequence Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Owner as Gym Owner (Frontend)
+    participant Client as Frontend (Next.js / React)
+    participant API as Backend API
+    participant RZP as Razorpay Gateway
+
+    Owner->>Client: Clicks "Upgrade Plan" or "Pay Now"
+    Client->>API: GET /api/v1/platform/plans (or /subscription/plans)
+    API-->>Client: Returns active plans with features & pricing
+    Note over Client: Optional: POST /api/v1/platform/plans/:id/quote with couponCode
+    Owner->>Client: Selects plan & clicks "Proceed to Pay"
+    Client->>API: POST /api/v1/platform/payments/create-order { planId, couponCode }
+    API->>RZP: Creates Razorpay Order (amount in paise, receipt)
+    RZP-->>API: Returns order_id
+    API-->>Client: Returns { orderId, amount, currency, keyId, plan, amountBreakdown }
+    Client->>RZP: Opens Razorpay Checkout Modal (new window.Razorpay(options))
+    Owner->>RZP: Completes payment (UPI / Card / NetBanking)
+    RZP-->>Client: Returns { razorpay_order_id, razorpay_payment_id, razorpay_signature }
+    Client->>API: POST /api/v1/platform/payments/verify { orderId, paymentId, signature }
+    API->>API: Cryptographically verifies HMAC signature & status
+    API-->>Client: Returns { status: "ACTIVE", subscription, payment }
+    Client-->>Owner: Displays Success Screen & unlocks CRM features!
+```
+
+---
+
+### 3. Step-by-Step Frontend Integration
+
+#### Step 3.1: Load the Razorpay Checkout SDK Script
+
+In Next.js or React, load the Razorpay script dynamically or place it in your document `<head>`:
+
+```html
+<!-- index.html or document head -->
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+```
+
+Or dynamically load it on demand with a reusable helper:
+
+```ts
+// lib/loadRazorpay.ts
+export function loadRazorpayScript(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined") return resolve(false);
+    if ((window as any).Razorpay) return resolve(true);
+
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+}
+```
+
+#### Step 3.2: Fetch Active Plans
+
+Call the public plans catalog endpoint:
+
+```ts
+// Endpoint: GET /api/v1/platform/plans (or /api/v1/subscription/plans)
+const res = await fetch("https://darkgoldgym.duckdns.org/api/v1/platform/plans", {
+  credentials: "include",
+});
+const { data: plans } = await res.json();
+```
+
+Each plan contains:
+- `id`: Unique plan ID (e.g. `cm3...`)
+- `name`: e.g. "Monthly Pro"
+- `pricePaise`: Base price in paise (e.g. `49900` = ₹499.00)
+- `gstPercent`: Applicable GST (e.g. `18`)
+- `durationDays` / `durationMonths`: Plan period
+- `features`: Array of plan perks
+
+#### Step 3.3: (Optional) Get Real-time Price Quote with Coupon
+
+If the user enters a coupon code (e.g. `LAUNCH10` or `WELCOME500`), get the calculated breakdown before checkout:
+
+```ts
+// Endpoint: POST /api/v1/platform/plans/:id/quote
+const res = await fetch(`https://darkgoldgym.duckdns.org/api/v1/platform/plans/${selectedPlanId}/quote`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  credentials: "include",
+  body: JSON.stringify({ couponCode: "LAUNCH10" }),
+});
+const { data: quote } = await res.json();
+/*
+  quote returns:
+  {
+    plan: { id, name, pricePaise },
+    pricing: {
+      base: 49900,
+      discount: 0,
+      couponDiscount: 4990,
+      taxable: 44910,
+      gst: 8084,
+      total: 52994  // Final chargeable amount in paise
+    },
+    coupon: { code: "LAUNCH10", percent: 10 }
+  }
+*/
+```
+
+#### Step 3.4: Create the Payment Order
+
+Call `create-order` to generate a Razorpay order on the backend:
+
+```ts
+// Endpoint: POST /api/v1/platform/payments/create-order
+// (Alternatively: POST /api/v1/subscription/checkout)
+const res = await fetch("https://darkgoldgym.duckdns.org/api/v1/platform/payments/create-order", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  credentials: "include",
+  body: JSON.stringify({
+    planId: selectedPlanId,
+    couponCode: enteredCouponCode || null,
+  }),
+});
+
+if (!res.ok) {
+  const errorData = await res.json();
+  throw new Error(errorData.message || "Failed to create order");
+}
+
+const { data } = await res.json();
+/*
+  data contains:
+  {
+    paymentId: "cm...",
+    orderId: "order_Qz123456789abc",
+    amount: 52994,            // In paise (₹529.94)
+    currency: "INR",
+    keyId: "rzp_live_abc123",  // Public Razorpay Key ID
+    plan: { ... },
+    amountBreakdown: { ... }
+  }
+*/
+```
+
+#### Step 3.5: Launch Razorpay Checkout Modal
+
+Use the response from Step 3.4 to configure and open the Razorpay modal:
+
+```ts
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
+
+function openRazorpayCheckout({
+  orderData,
+  userProfile,
+  onSuccess,
+  onFailure,
+  onDismiss,
+}: {
+  orderData: {
+    orderId: string;
+    amount: number;
+    currency: string;
+    keyId: string;
+    plan: { name: string };
+  };
+  userProfile?: { name?: string; email?: string; phone?: string };
+  onSuccess: (paymentResult: { orderId: string; paymentId: string; signature: string }) => void;
+  onFailure?: (error: any) => void;
+  onDismiss?: () => void;
+}) {
+  const options = {
+    key: orderData.keyId,
+    amount: orderData.amount, // in paise
+    currency: orderData.currency || "INR",
+    name: "DarkGold Gym CRM",
+    description: `Subscription: ${orderData.plan.name}`,
+    image: "/logo.png", // Optional: Path to gym/platform logo
+    order_id: orderData.orderId,
+    prefill: {
+      name: userProfile?.name || "",
+      email: userProfile?.email || "",
+      contact: userProfile?.phone || "",
+    },
+    theme: {
+      color: "#F59E0B", // Dark gold accent matching CRM theme
+    },
+    modal: {
+      ondismiss: () => {
+        if (onDismiss) onDismiss();
+      },
+    },
+    handler: function (response: {
+      razorpay_order_id: string;
+      razorpay_payment_id: string;
+      razorpay_signature: string;
+    }) {
+      onSuccess({
+        orderId: response.razorpay_order_id,
+        paymentId: response.razorpay_payment_id,
+        signature: response.razorpay_signature,
+      });
+    },
+  };
+
+  const rzp = new window.Razorpay(options);
+
+  rzp.on("payment.failed", function (response: any) {
+    console.error("Razorpay payment failed:", response.error);
+    if (onFailure) onFailure(response.error);
+  });
+
+  rzp.open();
+}
+```
+
+#### Step 3.6: Verify Payment on Backend
+
+Once Razorpay's `handler` triggers, immediately post the triple (`orderId`, `paymentId`, `signature`) to the backend verification endpoint:
+
+```ts
+// Endpoint: POST /api/v1/platform/payments/verify
+// (Alternatively: POST /api/v1/subscription/verify)
+async function verifyPayment({
+  orderId,
+  paymentId,
+  signature,
+}: {
+  orderId: string;
+  paymentId: string;
+  signature: string;
+}) {
+  const res = await fetch("https://darkgoldgym.duckdns.org/api/v1/platform/payments/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      orderId,
+      paymentId,
+      signature,
+    }),
+  });
+
+  const result = await res.json();
+  if (!res.ok) {
+    throw new Error(result.message || "Payment verification failed");
+  }
+
+  return result.data;
+  /*
+    Returns:
+    {
+      subscription: {
+        id: "cm...",
+        status: "ACTIVE",
+        currentPeriodStart: "2026-11-24T...",
+        currentPeriodEnd: "2026-12-24T...",
+        plan: { ... }
+      },
+      payment: { id: "cm...", status: "SUCCESS" },
+      alreadyVerified: false
+    }
+  */
+}
+```
+
+---
+
+### 4. Complete React / Next.js Implementation
+
+Here is a full, production-ready React component showing the entire flow from plan selection to checkout and instant activation:
+
+```tsx
+// components/SubscriptionCheckoutModal.tsx
+import React, { useState } from "react";
+import { loadRazorpayScript } from "@/lib/loadRazorpay";
+
+interface Plan {
+  id: string;
+  name: string;
+  pricePaise: number;
+  currency: string;
+  durationMonths: number;
+  features: string[];
+}
+
+interface SubscriptionCheckoutModalProps {
+  plan: Plan;
+  user: { name?: string; email?: string; phone?: string };
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+export function SubscriptionCheckoutModal({
+  plan,
+  user,
+  isOpen,
+  onClose,
+  onSuccess,
+}: SubscriptionCheckoutModalProps) {
+  const [couponCode, setCouponCode] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
+
+  const handlePay = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // 1. Ensure Razorpay checkout.js SDK is loaded
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded) {
+        throw new Error("Unable to load Razorpay SDK. Check your internet connection.");
+      }
+
+      // 2. Create the payment order on the backend
+      const orderRes = await fetch("/api/v1/platform/payments/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          planId: plan.id,
+          couponCode: couponCode.trim() || null,
+        }),
+      });
+
+      const orderJson = await orderRes.json();
+      if (!orderRes.ok) {
+        throw new Error(orderJson.message || "Could not initiate payment order");
+      }
+
+      const orderData = orderJson.data;
+
+      // 3. Configure Razorpay modal
+      const options = {
+        key: orderData.keyId,
+        amount: orderData.amount,
+        currency: orderData.currency || "INR",
+        name: "DarkGold Gym CRM",
+        description: `${plan.name} Subscription`,
+        order_id: orderData.orderId,
+        prefill: {
+          name: user.name || "",
+          email: user.email || "",
+          contact: user.phone || "",
+        },
+        theme: {
+          color: "#D97706", // Amber / Dark Gold theme
+        },
+        modal: {
+          ondismiss: () => {
+            setLoading(false);
+          },
+        },
+        handler: async (response: {
+          razorpay_order_id: string;
+          razorpay_payment_id: string;
+          razorpay_signature: string;
+        }) => {
+          try {
+            // 4. Verify the cryptographic signature on backend
+            const verifyRes = await fetch("/api/v1/platform/payments/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                orderId: response.razorpay_order_id,
+                paymentId: response.razorpay_payment_id,
+                signature: response.razorpay_signature,
+              }),
+            });
+
+            const verifyJson = await verifyRes.json();
+            if (!verifyRes.ok) {
+              throw new Error(verifyJson.message || "Payment verification failed.");
+            }
+
+            alert("Subscription activated successfully!");
+            onSuccess();
+            onClose();
+          } catch (verifyErr: any) {
+            setError(verifyErr.message);
+          } finally {
+            setLoading(false);
+          }
+        },
+      };
+
+      // 5. Open Razorpay modal
+      const rzp = new (window as any).Razorpay(options);
+      rzp.on("payment.failed", (failRes: any) => {
+        setLoading(false);
+        setError(failRes.error?.description || "Payment failed");
+      });
+      rzp.open();
+    } catch (err: any) {
+      setLoading(false);
+      setError(err.message || "An unexpected error occurred");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-zinc-800 p-6 text-white shadow-2xl">
+        <h2 className="text-xl font-bold">Upgrade to {plan.name}</h2>
+        <p className="mt-1 text-sm text-zinc-400">
+          Amount: ₹{(plan.pricePaise / 100).toFixed(2)} + GST
+        </p>
+
+        {error && (
+          <div className="mt-4 rounded-lg bg-red-900/30 border border-red-500/50 p-3 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-4">
+          <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+            Coupon Code (Optional)
+          </label>
+          <input
+            type="text"
+            placeholder="e.g. LAUNCH10"
+            value={couponCode}
+            onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+            className="mt-1 w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"
+          />
+        </div>
+
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="rounded-lg px-4 py-2 text-sm font-medium text-zinc-400 hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handlePay}
+            disabled={loading}
+            className="rounded-lg bg-amber-600 px-5 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+          >
+            {loading ? "Processing..." : "Pay with Razorpay"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+---
+
+### 5. Gym Member Fee Payments and Instant Receipts
+
+For gym receptionists collecting membership payments from gym members at the desk (UPI, Cash, Card, Bank Transfer):
+
+#### Endpoint: `POST /api/v1/payments`
+
+```ts
+const paymentPayload = {
+  memberId: "cm3member123",
+  membershipId: "cm3membership456",
+  amount: 150000,                      // ₹1,500.00 in paise
+  paymentMode: "UPI",                  // "CASH" | "UPI" | "CARD" | "BANK_TRANSFER"
+  reference: "UPI-TRANS-98765",        // Optional bank/UPI reference
+  paymentDate: new Date().toISOString(),
+  status: "SUCCESS"
+};
+
+const response = await fetch("https://darkgoldgym.duckdns.org/api/v1/payments", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Idempotency-Key": `rcpt-${crypto.randomUUID()}` // Prevents double charges
+  },
+  credentials: "include",
+  body: JSON.stringify(paymentPayload)
+});
+
+const { data, receipt, whatsapp } = await response.json();
+```
+
+#### What the response provides for the frontend:
+1. **Receipt Snapshot (`receipt`):** Ready-to-render breakdown of fees, GST, discounts, and outstanding dues.
+2. **Download PDF Receipt:** `GET /api/v1/payments/:id/receipt/pdf` (Streamed directly to the browser for viewing or printing).
+3. **Send to Member on WhatsApp:** `POST /api/v1/payments/:id/receipt/whatsapp` uploads the PDF directly to the Meta WhatsApp Cloud API and messages it to the member's registered mobile number.
+4. **Instant WhatsApp Share Link (`whatsapp.url`):** Opens WhatsApp Web or mobile app (`https://wa.me/91XXXXXXXXXX?text=...`) if Cloud API is not configured.
 
 ---
 
