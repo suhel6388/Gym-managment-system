@@ -23,9 +23,12 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
 
-      # 3. Install dependencies
+      # 3. Install dependencies (CI check: fails early if lockfile is broken)
       - name: Install dependencies
+        working-directory: backend
         run: npm ci
 
       # 4. Deploy to AWS EC2
@@ -36,6 +39,19 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
+            set -e
+
+            # Load node/npm/pm2 in a non-interactive SSH session (nvm installs)
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
             cd ~/Gym-managment-system
             git pull origin main
-           
+
+            # Install backend dependencies on the server
+            cd backend
+            npm ci --omit=dev
+
+            # Restart the app (first deploy starts it, later deploys reload it)
+            pm2 reload gym-backend --update-env || pm2 start src/server.js --name gym-backend
+            pm2 save
