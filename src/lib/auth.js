@@ -1,10 +1,3 @@
-if (!process.env.BETTER_AUTH_SECRET) {
-  try {
-    const dotenv = await import("dotenv");
-    (dotenv.default?.config || dotenv.config)?.();
-  } catch {}
-}
-
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { emailOTP } from "better-auth/plugins";
