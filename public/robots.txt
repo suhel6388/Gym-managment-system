@@ -1,0 +1,18 @@
+User-agent: *
+Allow: /
+Allow: /privacy/
+Allow: /terms/
+Allow: /_next/static/
+Allow: /images/
+Disallow: /dashboard/
+Disallow: /super-admin/
+Disallow: /api/
+Disallow: /auth/
+Disallow: /login/
+Disallow: /signup/
+Disallow: /verify-email/
+Disallow: /setup-gym/
+Disallow: /forgot-password/
+Disallow: /reset-password/
+
+Sitemap: https://darkgoldgym.duckdns.org/sitemap.xml
