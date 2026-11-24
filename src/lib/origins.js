@@ -148,3 +148,4 @@ export function isCrossSiteFrontend(env = process.env) {
     }
   });
 }
+

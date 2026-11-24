@@ -155,3 +155,4 @@ export async function sendPasswordResetEmail(email, resetUrl) {
 
   await sendMail({ to: email, subject, text, html });
 }
+

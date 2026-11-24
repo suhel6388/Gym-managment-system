@@ -1,5 +1,9 @@
-import dotenv from "dotenv";
-dotenv.config();
+try {
+  const dotenv = await import("dotenv");
+  dotenv.default?.config?.() || dotenv.config?.();
+} catch {
+  // Native Node.js or PM2 environment already present
+}
 import fs from "node:fs";
 import path from "node:path";
 import app, { publicPath } from "./src/app.js"
