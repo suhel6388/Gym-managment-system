@@ -18,13 +18,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # 2. Setup Node.js (no cache, so it can't fail on lockfile paths)
+      # 2. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '24'
 
-      # 3. Deploy to AWS EC2 (dependencies are installed on the server)
+      # 3. Deploy to AWS EC2
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -41,9 +41,16 @@ jobs:
             cd ~/Gym-managment-system
             git pull origin main
 
-            # Install dependencies on the server
-            cd backend
-            npm ci --omit=dev
+            # Install dependencies (full install, Prisma CLI is usually a devDependency)
+            npm ci
+
+            # Prisma: regenerate client + apply schema
+            npx prisma generate
+            if [ -d prisma/migrations ]; then
+              npx prisma migrate deploy
+            else
+              npx prisma db push
+            fi
 
             # Restart the app
             pm2 reload gym-backend --update-env || pm2 start src/server.js --name gym-backend
