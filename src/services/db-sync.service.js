@@ -43,7 +43,7 @@ export async function ensureDatabaseSchema() {
         END;
 
         -- Platform (SaaS) billing columns. Additive and idempotent so a
-        -- deployment that skipped `prisma migrate deploy` still works.
+        -- deployment that skipped prisma migrate deploy still works.
         BEGIN
           ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "slug" TEXT;
           ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "durationDays" INTEGER;
