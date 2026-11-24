@@ -40,21 +40,33 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Ensure swap space exists to prevent OOM kills on EC2
-            if [ ! -f /swapfile ]; then
-              sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+            # 1. Expand partition if EBS volume was resized in AWS Console
+            sudo growpart /dev/xvda 1 2>/dev/null || sudo growpart /dev/nvme0n1 1 2>/dev/null || true
+            sudo resize2fs /dev/xvda1 2>/dev/null || sudo resize2fs /dev/nvme0n1p1 2>/dev/null || true
+
+            # 2. Free up disk space (clean apt cache, system logs, npm cache, PM2 logs)
+            sudo apt-get clean 2>/dev/null || true
+            sudo journalctl --vacuum-time=1d 2>/dev/null || true
+            npm cache clean --force 2>/dev/null || true
+            rm -rf ~/.npm /tmp/* /var/tmp/* 2>/dev/null || true
+            pm2 flush || true
+            rm -rf ~/.pm2/logs/* 2>/dev/null || true
+
+            # 3. Ensure 1GB swap space exists (prevents OOM kills while conserving 8GB disk)
+            if [ ! -f /swapfile ] && [ $(free -m | awk '/^Swap:/{print $2}') -eq 0 ]; then
+              sudo fallocate -l 1G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=1024
               sudo chmod 600 /swapfile
               sudo mkswap /swapfile
               sudo swapon /swapfile || true
             fi
 
-            # Clear all previous PM2 logs from memory and disk
-            pm2 flush || true
-            rm -rf ~/.pm2/logs/*
-
+            # 4. Install dependencies & generate Prisma client
             npm install --no-audit --no-fund
             npx prisma generate || node node_modules/prisma/build/index.js generate
+
+            # 5. Restart PM2 cleanly
             pm2 delete all || true
             pm2 start ecosystem.config.cjs
             pm2 save
+
 
