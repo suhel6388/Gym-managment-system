@@ -1,7 +1,7 @@
 
 import { Router } from "express";
 import { AttendanceController } from "../controllers/attendence.controller.js";
-import { requireAuth } from "../middleware/requireAuth";
+import { requireAuth } from "../middleware/requireAuth.js";
 import { allowReadAndCreateOnly } from "../middleware/auth.js";
 import { requireActiveSubscription } from "../middleware/subscription.js";
 

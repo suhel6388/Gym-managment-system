@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { fromNodeHeaders } from "better-auth/node";
 
-import { auth } from "../lib/auth.ts";
+import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
 import { forwardCookies } from "./auth.controller.js";
 

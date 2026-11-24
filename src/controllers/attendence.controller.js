@@ -1,11 +1,9 @@
-import type { Response, NextFunction } from "express";
 import { z } from "zod";
-import { AttendanceMarkingMethod } from "../../generated/prisma/client";
-import type { AuthRequest } from "../middleware/requireAuth";
+import { AttendanceMarkingMethod } from "@prisma/client";
 import {
   AttendanceService,
   HttpError,
-} from "../services/attendence.services";
+} from "../services/attendence.services.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -56,7 +54,7 @@ const historyQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-function requireGymId(req: AuthRequest): string {
+function requireGymId(req) {
   if (!req.gymId) {
     throw new HttpError(403, "Authenticated gym is missing");
   }
@@ -64,11 +62,7 @@ function requireGymId(req: AuthRequest): string {
 }
 
 export class AttendanceController {
-  static async searchMembers(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) {
+  static async searchMembers(req, res, next) {
     try {
       const { q } = searchQuery.parse(req.query);
 
@@ -84,7 +78,7 @@ export class AttendanceController {
     }
   }
 
-  static async checkIn(req: AuthRequest, res: Response, next: NextFunction) {
+  static async checkIn(req, res, next) {
     try {
       const input = checkInBody.parse(req.body ?? {});
 
@@ -101,7 +95,7 @@ export class AttendanceController {
     }
   }
 
-  static async checkOut(req: AuthRequest, res: Response, next: NextFunction) {
+  static async checkOut(req, res, next) {
     try {
       const input = checkOutBody.parse(req.body ?? {});
 
@@ -116,11 +110,7 @@ export class AttendanceController {
     }
   }
 
-  static async getOpenSession(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) {
+  static async getOpenSession(req, res, next) {
     try {
       const { memberId } = memberIdParam.parse(req.params);
       const data = await AttendanceService.getOpenSession(
@@ -134,11 +124,7 @@ export class AttendanceController {
     }
   }
 
-  static async getMemberHistory(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) {
+  static async getMemberHistory(req, res, next) {
     try {
       const { memberId } = memberIdParam.parse(req.params);
       const { page, limit } = historyQuery.parse(req.query);
@@ -156,11 +142,7 @@ export class AttendanceController {
     }
   }
 
-  static async getTodaySummary(
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) {
+  static async getTodaySummary(req, res, next) {
     try {
       const data = await AttendanceService.getTodaySummary(requireGymId(req));
 

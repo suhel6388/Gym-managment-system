@@ -12,7 +12,7 @@ import {
   resolveClientOriginFromRequest,
   resolvePublicApiOrigin,
   resolveRequestClientOrigin,
-} from "../src/lib/origins.ts";
+} from "../src/lib/origins.js";
 
 const RENDER_API = "https://gym-managment-system-7yiu.onrender.com";
 const VERCEL_CLIENT = "https://client-gym-iota.vercel.app";

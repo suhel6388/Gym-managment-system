@@ -1,5 +1,5 @@
 import { fromNodeHeaders } from "better-auth/node";
-import { auth } from "../lib/auth.ts";
+import { auth } from "../lib/auth.js";
 import { prisma } from "../db.js";
 
 export {

@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { AddCall, DeleteCall, GetAllCall, PatchCall } from "../controllers/schedule.call.controller";
-import { authenticate, requireSuperAdmin } from "../middleware/auth";
+import { AddCall, DeleteCall, GetAllCall, PatchCall } from "../controllers/schedule.call.controller.js";
+import { authenticate, requireSuperAdmin } from "../middleware/auth.js";
 
 const router = Router();
 

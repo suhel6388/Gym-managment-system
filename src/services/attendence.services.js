@@ -1,39 +1,23 @@
 import {
   AttendanceMarkingMethod,
   Prisma,
-} from "../../generated/prisma/client";
-import { prisma } from "../lib/prisma";
+} from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 
 export class HttpError extends Error {
-  statusCode: number;
-
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode, message) {
     super(message);
     this.statusCode = statusCode;
   }
 }
 
-type CheckInInput = {
-  gymId: string;
-  memberId: string;
-  attendanceDate: Date;
-  notes?: string;
-  markingMethod: AttendanceMarkingMethod;
-};
-
-type CheckOutInput = {
-  gymId: string;
-  memberId: string;
-  notes?: string;
-};
-
-const openSessionFilter = (gymId: string, memberId: string) => ({
+const openSessionFilter = (gymId, memberId) => ({
   gymId,
   memberId,
   checkOutAt: null,
 });
 
-async function requireGymMember(gymId: string, memberId: string) {
+async function requireGymMember(gymId, memberId) {
   const member = await prisma.member.findFirst({
     where: { id: memberId, gymId, archivedAt: null },
     select: { id: true },
@@ -46,7 +30,7 @@ async function requireGymMember(gymId: string, memberId: string) {
   return member;
 }
 
-function toConflict(error: unknown): never {
+function toConflict(error) {
   if (
     error instanceof Prisma.PrismaClientKnownRequestError &&
     ["P2002", "P2034"].includes(error.code)
@@ -58,7 +42,7 @@ function toConflict(error: unknown): never {
 }
 
 export class AttendanceService {
-  static searchMembers(gymId: string, query: string, take = 20) {
+  static searchMembers(gymId, query, take = 20) {
     const q = query.trim();
 
     return prisma.member.findMany({
@@ -82,7 +66,7 @@ export class AttendanceService {
     });
   }
 
-  static async checkIn(input: CheckInInput) {
+  static async checkIn(input) {
     const { gymId, memberId, attendanceDate, notes, markingMethod } = input;
 
     await requireGymMember(gymId, memberId);
@@ -118,7 +102,7 @@ export class AttendanceService {
     }
   }
 
-  static async checkOut(input: CheckOutInput) {
+  static async checkOut(input) {
     const { gymId, memberId, notes } = input;
 
     await requireGymMember(gymId, memberId);
@@ -150,7 +134,7 @@ export class AttendanceService {
     });
   }
 
-  static getOpenSession(gymId: string, memberId: string) {
+  static getOpenSession(gymId, memberId) {
     return prisma.attendance.findFirst({
       where: openSessionFilter(gymId, memberId),
       orderBy: { checkInAt: "desc" },
@@ -158,8 +142,8 @@ export class AttendanceService {
   }
 
   static async getMemberHistory(
-    gymId: string,
-    memberId: string,
+    gymId,
+    memberId,
     page = 1,
     limit = 20,
   ) {
@@ -167,7 +151,7 @@ export class AttendanceService {
 
     const safePage = Math.max(1, Math.floor(page) || 1);
     const safeLimit = Math.min(100, Math.max(1, Math.floor(limit) || 20));
-    const where: Prisma.AttendanceWhereInput = { gymId, memberId };
+    const where = { gymId, memberId };
 
     const [data, total] = await prisma.$transaction([
       prisma.attendance.findMany({
@@ -190,14 +174,14 @@ export class AttendanceService {
     };
   }
 
-  static async getTodaySummary(gymId: string, now = new Date()) {
+  static async getTodaySummary(gymId, now = new Date()) {
     const start = new Date(now);
     start.setUTCHours(0, 0, 0, 0);
 
     const end = new Date(start);
     end.setUTCDate(end.getUTCDate() + 1);
 
-    const where: Prisma.AttendanceWhereInput = {
+    const where = {
       gymId,
       attendanceDate: { gte: start, lt: end },
     };

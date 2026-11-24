@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
-import { auth } from "./lib/auth.ts";
+import { auth } from "./lib/auth.js";
 import cors from "cors";
 import helmet from "helmet";
 import authRoutes from "./routes/auth.route.js";
@@ -28,7 +28,7 @@ import platformRoutes from "./routes/platform.routes.js";
 import aiAssistantRoutes from "./routes/ai-assistant.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
-import { getClientOrigins } from "./lib/origins.ts";
+import { getClientOrigins } from "./lib/origins.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

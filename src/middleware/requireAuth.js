@@ -1,27 +1,8 @@
-
-import type { Request, Response, NextFunction } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { auth } from "../lib/auth.ts";
-import { prisma } from "../lib/prisma.ts";
+import { auth } from "../lib/auth.js";
+import { prisma } from "../lib/prisma.js";
 
-export interface AuthRequest extends Request {
-  authUserId?: string;
-  gymId?: string;
-  // Same shape as `authenticate` (src/middleware/auth.js) so shared
-  // role/permission middleware works on attendance routes too.
-  user?: {
-    id: string;
-    gymId: string | null;
-    role: string;
-    email?: string;
-  };
-}
-
-export async function requireAuth(
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) {
+export async function requireAuth(req, res, next) {
   try {
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
@@ -45,7 +26,6 @@ export async function requireAuth(
       },
     });
 
-    // Only verified accounts may reach gym data (attendance included).
     const emailVerified = user?.emailVerified ?? session.user.emailVerified;
     if (!emailVerified) {
       return res.status(403).json({

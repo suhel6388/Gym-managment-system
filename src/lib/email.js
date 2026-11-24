@@ -1,5 +1,4 @@
 import nodemailer from "nodemailer";
-import type { Transporter } from "nodemailer";
 
 const smtpHost = process.env.SMTP_HOST;
 const smtpPort = Number(process.env.SMTP_PORT) || 587;
@@ -8,8 +7,6 @@ const smtpPass = process.env.SMTP_PASS;
 const fromAddress =
   process.env.SMTP_FROM || smtpUser || "no-reply@gym-crm.local";
 
-// `secure: true` = implicit TLS (port 465), `false` = STARTTLS (ports 587/2525).
-// Default: true for 465, false otherwise. Override with SMTP_SECURE=true/false.
 const smtpSecureDefault = smtpPort === 465;
 const smtpSecure =
   process.env.SMTP_SECURE === "true"
@@ -18,18 +15,9 @@ const smtpSecure =
       ? false
       : smtpSecureDefault;
 
-let transporter: Transporter | null = null;
-
-// Explicit dev/testing switch: EMAIL_LOG_OTPS=true logs OTPs (and reset
-// links) to the server console instead of emailing them — handy on local
-// environments where you don't control the SMTP inbox.
+let transporter = null;
 const forceConsole = process.env.EMAIL_LOG_OTPS === "true";
 
-/**
- * Hard cap for a single email delivery. Signup awaits the verification email,
- * so a slow or unreachable SMTP server must never keep the HTTP request open
- * until the browser gives up (the client timeout is 30s by default).
- */
 const emailSendTimeoutMs =
   Number(process.env.EMAIL_SEND_TIMEOUT_MS) || 12_000;
 
@@ -39,8 +27,6 @@ if (!forceConsole && smtpHost && smtpUser && smtpPass) {
     port: smtpPort,
     secure: smtpSecure,
     auth: { user: smtpUser, pass: smtpPass },
-    // Nodemailer's defaults are measured in minutes. Fail fast instead so a
-    // blocked SMTP port (Render free blocks 25/465/587) cannot stall signup.
     connectionTimeout:
       Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8_000,
     greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8_000,
@@ -58,8 +44,6 @@ if (!forceConsole && smtpHost && smtpUser && smtpPass) {
   );
 }
 
-// Render blocks outbound traffic on the standard SMTP ports for free web
-// services. Port 2525 (Brevo, SendGrid, Mailgun) works on Render free.
 if (
   transporter &&
   process.env.RENDER &&
@@ -72,18 +56,9 @@ if (
   );
 }
 
-/**
- * Races an async operation against a deadline. The underlying operation is not
- * cancelled (Nodemailer owns the socket), but the caller is released as soon
- * as the deadline passes so an HTTP request cannot hang indefinitely.
- */
-function withTimeout<T>(
-  operation: Promise<T>,
-  ms: number,
-  label: string
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
+function withTimeout(operation, ms, label) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
       reject(new Error(`${label} timed out after ${ms}ms`));
     }, ms);
@@ -94,7 +69,7 @@ function withTimeout<T>(
   });
 }
 
-function escapeHtml(value: string): string {
+function escapeHtml(value) {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -103,12 +78,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-async function sendMail(options: {
-  to: string;
-  subject: string;
-  text: string;
-  html: string;
-}): Promise<void> {
+async function sendMail(options) {
   if (!transporter) {
     throw new Error("SMTP transport is not configured");
   }
@@ -128,10 +98,7 @@ async function sendMail(options: {
   }
 }
 
-export async function sendOTPEmail(
-  email: string,
-  otp: string
-): Promise<boolean> {
+export async function sendOTPEmail(email, otp) {
   const subject = "Your Gym CRM verification code";
   const text = `Your verification code is ${otp}. It expires in 5 minutes.`;
   const html = `<p>Your verification code is <strong>${otp}</strong>.</p><p>It expires in 5 minutes.</p>`;
@@ -141,8 +108,6 @@ export async function sendOTPEmail(
     return true;
   }
 
-  // No transport means the OTP was not emailed. Throw so the caller can
-  // report `emailSent: false` instead of falsely claiming delivery.
   if (!transporter) {
     throw new Error("SMTP transport is not configured");
   }
@@ -151,14 +116,7 @@ export async function sendOTPEmail(
   return true;
 }
 
-/**
- * Send the 6-digit code used by the OTP password-reset flow. In dev
- * (`EMAIL_LOG_OTPS=true`) the code is logged instead of emailed.
- */
-export async function sendPasswordResetOtpEmail(
-  email: string,
-  otp: string
-): Promise<boolean> {
+export async function sendPasswordResetOtpEmail(email, otp) {
   const subject = "Your Gym CRM password reset code";
   const text =
     `Your password reset code is ${otp}. It expires in 5 minutes.\n\n` +
@@ -181,15 +139,7 @@ export async function sendPasswordResetOtpEmail(
   return true;
 }
 
-/**
- * Send a password-reset link. The link points at the frontend reset page,
- * which exchanges the token for a new password via POST /api/v1/auth/reset-password.
- * In dev (SMTP unset) the link is logged instead of emailed.
- */
-export async function sendPasswordResetEmail(
-  email: string,
-  resetUrl: string
-): Promise<void> {
+export async function sendPasswordResetEmail(email, resetUrl) {
   const subject = "Reset your Gym CRM password";
   const text =
     `Reset your password: ${resetUrl}\n\n` +
