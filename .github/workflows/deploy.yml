@@ -18,20 +18,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # 2. Setup Node.js
+      # 2. Setup Node.js (no cache, so it can't fail on lockfile paths)
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
 
-      # 3. Install dependencies (CI check: fails early if lockfile is broken)
-      - name: Install dependencies
-        working-directory: backend
-        run: npm ci
-
-      # 4. Deploy to AWS EC2
+      # 3. Deploy to AWS EC2 (dependencies are installed on the server)
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -48,10 +41,10 @@ jobs:
             cd ~/Gym-managment-system
             git pull origin main
 
-            # Install backend dependencies on the server
+            # Install dependencies on the server
             cd backend
             npm ci --omit=dev
 
-            # Restart the app (first deploy starts it, later deploys reload it)
+            # Restart the app
             pm2 reload gym-backend --update-env || pm2 start src/server.js --name gym-backend
             pm2 save
