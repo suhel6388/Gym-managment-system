@@ -256,7 +256,12 @@ export async function createGymOwner(actor, input) {
   const trialPricePaise = settings?.trialPricePaise ?? 0;
   const trialStartsAt = plan ? null : now;
   const trialEndsAt = plan ? null : addDays(now, trialDurationDays);
-  const periodEnd = plan ? addMonthsClamped(now, plan.durationMonths) : null;
+  // durationDays is canonical; fall back to durationMonths for legacy plans.
+  const periodEnd = plan
+    ? plan.durationDays > 0
+      ? addDays(now, plan.durationDays)
+      : addMonthsClamped(now, plan.durationMonths)
+    : null;
 
   // The owner never learns this value; the invitation email lets them set a
   // password through the existing reset-password flow.

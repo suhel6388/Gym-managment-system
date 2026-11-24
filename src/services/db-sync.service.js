@@ -41,9 +41,45 @@ export async function ensureDatabaseSchema() {
         EXCEPTION
           WHEN OTHERS THEN NULL;
         END;
+
+        -- Platform (SaaS) billing columns. Additive and idempotent so a
+        -- deployment that skipped `prisma migrate deploy` still works.
+        BEGIN
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "slug" TEXT;
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "durationDays" INTEGER;
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "gstPercent" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "discountPaise" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3);
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+          ALTER TABLE "SubscriptionPlan" ADD COLUMN IF NOT EXISTS "updatedBy" TEXT;
+          CREATE UNIQUE INDEX IF NOT EXISTS "SubscriptionPlan_slug_key" ON "SubscriptionPlan" ("slug");
+          CREATE INDEX IF NOT EXISTS "SubscriptionPlan_deletedAt_idx" ON "SubscriptionPlan" ("deletedAt");
+        EXCEPTION
+          WHEN OTHERS THEN NULL;
+        END;
+
+        BEGIN
+          ALTER TABLE "SubscriptionPayment" ADD COLUMN IF NOT EXISTS "amountBreakdown" JSONB;
+          ALTER TABLE "SubscriptionPayment" ADD COLUMN IF NOT EXISTS "planSnapshot" JSONB;
+          ALTER TABLE "SubscriptionPayment" ADD COLUMN IF NOT EXISTS "couponCode" TEXT;
+          ALTER TABLE "SubscriptionPayment" ADD COLUMN IF NOT EXISTS "processedEventIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+          ALTER TABLE "SubscriptionPayment" ADD COLUMN IF NOT EXISTS "purpose" TEXT NOT NULL DEFAULT 'SUBSCRIPTION';
+          CREATE INDEX IF NOT EXISTS "SubscriptionPayment_status_createdAt_idx" ON "SubscriptionPayment" ("status", "createdAt");
+        EXCEPTION
+          WHEN OTHERS THEN NULL;
+        END;
+
+        BEGIN
+          ALTER TABLE "SubscriptionSetting" ADD COLUMN IF NOT EXISTS "gracePeriodDays" INTEGER NOT NULL DEFAULT 3;
+          ALTER TABLE "SubscriptionAuditLog" ADD COLUMN IF NOT EXISTS "oldValues" JSONB;
+          ALTER TABLE "SubscriptionAuditLog" ADD COLUMN IF NOT EXISTS "newValues" JSONB;
+          CREATE INDEX IF NOT EXISTS "SubscriptionAuditLog_planId_createdAt_idx" ON "SubscriptionAuditLog" ("planId", "createdAt");
+        EXCEPTION
+          WHEN OTHERS THEN NULL;
+        END;
       END $$;
     `);
-    console.log("[db] Database schema verified (Payment columns & GymReceiptSettings).");
+    console.log("[db] Database schema verified (Payment columns, receipts & platform billing).");
   } catch (err) {
     console.warn("[db] Note on schema check:", err?.message || err);
   }

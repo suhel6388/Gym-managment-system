@@ -6,13 +6,14 @@
 
 import { prisma } from "../db.js";
 import {
+  badGateway,
   badRequest,
   conflict,
   forbidden,
   notFound,
   serviceUnavailable,
 } from "../utils/http-error.js";
-import { addMonthsClamped, addDays, daysRemaining, isFuture } from "../utils/dates.js";
+import { addDays, daysRemaining, isFuture, DAY_MS } from "../utils/dates.js";
 import {
   createOrder,
   fetchPayment,
@@ -58,7 +59,7 @@ async function getSettingsRow() {
 }
 
 /** Append an audit log entry within the given transaction (or the main client). */
-async function auditLog(tx, { action, gymId, planId, subscriptionId, actor, reason, details }) {
+async function auditLog(tx, { action, gymId, planId, subscriptionId, actor, reason, details, oldValues, newValues }) {
   await tx.subscriptionAuditLog.create({
     data: {
       action,
@@ -70,6 +71,8 @@ async function auditLog(tx, { action, gymId, planId, subscriptionId, actor, reas
       actorRole: actor?.role ?? null,
       reason: reason ?? null,
       details: details ?? null,
+      oldValues: oldValues ?? null,
+      newValues: newValues ?? null,
     },
   });
 }
@@ -82,17 +85,23 @@ async function auditLog(tx, { action, gymId, planId, subscriptionId, actor, reas
  *   TRIALING      -> entitled while trialEndsAt is in the future
  *   ACTIVE        -> entitled while currentPeriodEnd is in the future
  *   CANCELLED     -> entitled while cancelAtPeriodEnd && currentPeriodEnd in future
- *   EXPIRED/PAST_DUE -> never entitled
+ *   EXPIRED/PAST_DUE -> entitled only inside the configured grace window
+ *   SUSPENDED     -> never entitled (overrides an unexpired paid period)
  *
- * Returns { entitled, subscription, expiresAt, remainingDays, reason }.
+ * `gracePeriodDays` lets a recently expired gym keep working while it renews.
+ * It defaults to 0 so the pure helper's historical behaviour is unchanged;
+ * the API middleware passes the platform-configured value.
+ *
+ * Returns { entitled, subscription, expiresAt, remainingDays, graceEndsAt, reason }.
  */
-export function computeEntitlement(sub, now = new Date()) {
+export function computeEntitlement(sub, now = new Date(), { gracePeriodDays = 0 } = {}) {
   if (!sub) {
     return {
       entitled: false,
       subscription: null,
       expiresAt: null,
       remainingDays: 0,
+      graceEndsAt: null,
       reason: "NO_SUBSCRIPTION",
     };
   }
@@ -100,6 +109,7 @@ export function computeEntitlement(sub, now = new Date()) {
   const status = sub.status;
   let expiresAt = null;
   let remainingDays = 0;
+  let graceEndsAt = null;
   let entitled = false;
   let reason = status;
 
@@ -153,11 +163,31 @@ export function computeEntitlement(sub, now = new Date()) {
     reason = "SUSPENDED";
   } else {
     // EXPIRED, PAST_DUE
+    expiresAt =
+      sub.currentPeriodEnd ?? sub.trialEndsAt ?? sub.graceEndsAt ?? null;
     entitled = false;
     remainingDays = 0;
+    reason = status;
   }
 
-  return { entitled, subscription: sub, expiresAt, remainingDays, reason };
+  // Post-expiry grace: only applies to date-based expiry, never to a
+  // suspension or an explicitly cancelled subscription.
+  if (
+    !entitled &&
+    !["SUSPENDED", "CANCELLED"].includes(status) &&
+    expiresAt &&
+    gracePeriodDays > 0
+  ) {
+    const graceEnd = new Date(expiresAt.getTime() + gracePeriodDays * DAY_MS);
+    if (graceEnd.getTime() > now.getTime()) {
+      graceEndsAt = graceEnd;
+      entitled = true;
+      reason = "GRACE_PERIOD";
+      remainingDays = daysRemaining(graceEnd, now);
+    }
+  }
+
+  return { entitled, subscription: sub, expiresAt, remainingDays, graceEndsAt, reason };
 }
 
 /** Build a public plan representation (no internal pricing secrets beyond what's public). */
@@ -233,6 +263,9 @@ export async function getMySubscription(gymId) {
       entitled: entitlement.entitled,
       expiresAt: entitlement.expiresAt,
       remainingDays: entitlement.remainingDays,
+      daysLeft: entitlement.remainingDays,
+      graceEndsAt: entitlement.graceEndsAt ?? null,
+      planName: sub?.planNameSnapshot ?? sub?.plan?.name ?? null,
       reason: entitlement.reason,
     },
   };
@@ -489,7 +522,8 @@ export async function verifyPayment(gymId, { orderId, paymentId, signature }) {
   }
 
   const now = new Date();
-  const periodEnd = addMonthsClamped(now, plan.durationMonths);
+  // durationDays is canonical; fall back to durationMonths for legacy plans.
+  const periodEnd = addDays(now, resolvePlanDurationDays(plan));
 
   // 3. Activate subscription inside a transaction.
   const [subscription, updatedPayment] = await prisma.$transaction(async (tx) => {
@@ -625,7 +659,8 @@ export async function verifyAndActivateFromWebhook(orderId, paymentId) {
 
   const gymId = payment.gymId;
   const now = new Date();
-  const periodEnd = addMonthsClamped(now, plan.durationMonths);
+  // durationDays is canonical; fall back to durationMonths for legacy plans.
+  const periodEnd = addDays(now, resolvePlanDurationDays(plan));
 
   const [subscription, updatedPayment] = await prisma.$transaction(async (tx) => {
     const sub = await tx.gymSubscription.upsert({
@@ -1308,21 +1343,36 @@ export async function reconcileExpiredSubscriptions(now = new Date()) {
   const updated = [];
 
   for (const sub of toExpire) {
-    const updatedSub = await prisma.gymSubscription.update({
-      where: { id: sub.id },
-      data: { status: "EXPIRED", updatedAt: now },
-    });
-    await prisma.subscriptionAuditLog.create({
-      data: {
-        action: "SUBSCRIPTION_EXPIRED",
-        gymId: sub.gymId,
-        subscriptionId: sub.id,
-        actor: null,
-        reason: "Automatic expiry reconciliation",
-        details: { previousStatus: sub.status, expiredAt: now },
-      },
-    });
-    updated.push(updatedSub);
+    try {
+      const updatedSub = await prisma.$transaction(async (tx) => {
+        const nextSub = await tx.gymSubscription.update({
+          where: { id: sub.id },
+          data: { status: "EXPIRED", updatedAt: now },
+        });
+        await auditLog(tx, {
+          action: "SUBSCRIPTION_EXPIRED",
+          gymId: sub.gymId,
+          subscriptionId: sub.id,
+          actor: null,
+          reason: "Automatic expiry reconciliation",
+          details: {
+            previousStatus: sub.status,
+            expiredAt: now,
+            expiresAt: sub.currentPeriodEnd ?? sub.trialEndsAt ?? null,
+          },
+          oldValues: { status: sub.status },
+          newValues: { status: nextSub.status },
+        });
+        return nextSub;
+      });
+      updated.push(updatedSub);
+    } catch (err) {
+      // One bad row must never stop the rest of the sweep. The per-request
+      // entitlement check still blocks access for an expired subscription.
+      console.error(
+        `[subscription-expiry] could not expire ${sub.id}: ${err?.message ?? err}`,
+      );
+    }
   }
 
   return {
@@ -1330,4 +1380,325 @@ export async function reconcileExpiredSubscriptions(now = new Date()) {
     expiredCount: updated.length,
     expired: updated.map((s) => ({ gymId: s.gymId, id: s.id, status: s.status })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Platform billing (GST / discount / snapshots) — shared helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Duration in days for a plan. Platform plans set `durationDays`; legacy plans
+ * only have `durationMonths`, which is converted at 30 days per month.
+ */
+export function resolvePlanDurationDays(plan) {
+  if (plan?.durationDays && plan.durationDays > 0) return Math.floor(plan.durationDays);
+  if (plan?.durationMonths && plan.durationMonths > 0) return Math.floor(plan.durationMonths * 30);
+  return 30;
+}
+
+/** The instant a gym's current paid/trial access runs out, or null. */
+export function currentEntitlementEnd(sub) {
+  if (!sub) return null;
+  if (sub.status === "TRIALING") return sub.trialEndsAt ?? null;
+  return sub.currentPeriodEnd ?? sub.trialEndsAt ?? null;
+}
+
+/** Owner-facing subscription shape shared by /platform/subscription routes. */
+export function serializeSubscriptionForOwner(sub) {
+  if (!sub) return null;
+  return {
+    id: sub.id,
+    status: sub.status,
+    planId: sub.planId ?? null,
+    planName: sub.planNameSnapshot ?? sub.plan?.name ?? null,
+    pricePaise: sub.pricePaise,
+    currency: sub.currency,
+    startsAt: sub.currentPeriodStart ?? sub.trialStartsAt ?? null,
+    expiresAt: currentEntitlementEnd(sub),
+    trialStartsAt: sub.trialStartsAt ?? null,
+    trialEndsAt: sub.trialEndsAt ?? null,
+    cancelAtPeriodEnd: Boolean(sub.cancelAtPeriodEnd),
+    cancelledAt: sub.cancelledAt ?? null,
+    paymentProvider: sub.paymentProvider ?? null,
+    createdAt: sub.createdAt,
+    updatedAt: sub.updatedAt,
+  };
+}
+
+/** Cached (60s) grace period so the entitlement middleware stays cheap. */
+let graceCache = { value: null, readAt: 0 };
+const GRACE_CACHE_MS = 60 * 1000;
+
+export async function getGracePeriodDays() {
+  const envValue = Number(process.env.SUBSCRIPTION_GRACE_PERIOD_DAYS);
+  const envFallback = Number.isFinite(envValue) && envValue >= 0 ? Math.floor(envValue) : 3;
+
+  if (graceCache.value !== null && Date.now() - graceCache.readAt < GRACE_CACHE_MS) {
+    return graceCache.value;
+  }
+
+  let value = envFallback;
+  try {
+    const settings = await prisma.subscriptionSetting.findUnique({
+      where: { id: SINGLETON_SETTINGS_ID },
+      select: { gracePeriodDays: true },
+    });
+    if (settings && Number.isInteger(settings.gracePeriodDays)) {
+      value = Math.max(0, settings.gracePeriodDays);
+    }
+  } catch {
+    // Settings table unavailable — fall back to env/default.
+  }
+
+  graceCache = { value, readAt: Date.now() };
+  return value;
+}
+
+/** Test/bootstrap helper: forget the cached grace period. */
+export function clearGracePeriodCache() {
+  graceCache = { value: null, readAt: 0 };
+}
+
+/**
+ * Public, login-friendly subscription summary.
+ * Shape required by the owner app:
+ *   { status, planName, expiresAt, daysLeft, entitled, reason, graceEndsAt }
+ */
+export async function getSubscriptionSummary(gymId, now = new Date()) {
+  if (!gymId) {
+    return {
+      status: "NONE",
+      planName: null,
+      expiresAt: null,
+      daysLeft: 0,
+      entitled: false,
+      reason: "NO_SUBSCRIPTION",
+      graceEndsAt: null,
+    };
+  }
+
+  const [sub, gracePeriodDays] = await Promise.all([
+    prisma.gymSubscription.findUnique({ where: { gymId }, include: { plan: true } }),
+    getGracePeriodDays(),
+  ]);
+
+  const entitlement = computeEntitlement(sub, now, { gracePeriodDays });
+
+  return {
+    status: sub?.status ?? "NONE",
+    planName: sub?.planNameSnapshot ?? sub?.plan?.name ?? null,
+    expiresAt: entitlement.expiresAt,
+    daysLeft: entitlement.remainingDays,
+    entitled: entitlement.entitled,
+    reason: entitlement.reason,
+    graceEndsAt: entitlement.graceEndsAt ?? null,
+  };
+}
+
+/**
+ * Apply a provider-verified successful payment exactly once.
+ *
+ * Concurrency / idempotency:
+ *   The status transition CREATED|PENDING|FAILED -> SUCCESS is a single
+ *   conditional UPDATE inside the transaction. Only the transaction that wins
+ *   that row-level gate extends the subscription, so a webhook racing the
+ *   browser `verify` call can never double-extend it.
+ *
+ * Renewal: the new period starts at the later of "now" and the current
+ * entitlement end, so renewing early adds time instead of discarding it.
+ */
+export async function applySuccessfulPayment({
+  gymId,
+  paymentId,
+  providerPaymentId,
+  signature = null,
+  eventId = null,
+  source = "verify",
+  now = new Date(),
+}) {
+  const outcome = await prisma.$transaction(async (tx) => {
+    const gate = await tx.subscriptionPayment.updateMany({
+      where: {
+        id: paymentId,
+        gymId,
+        status: { in: ["CREATED", "PENDING", "FAILED"] },
+      },
+      data: {
+        status: "SUCCESS",
+        paymentId: providerPaymentId,
+        signature,
+        verifiedAt: now,
+        failureReason: null,
+        updatedAt: now,
+      },
+    });
+
+    if (gate.count === 0) {
+      const [existingPayment, existingSub] = await Promise.all([
+        tx.subscriptionPayment.findUnique({ where: { id: paymentId } }),
+        tx.gymSubscription.findUnique({ where: { gymId }, include: { plan: true } }),
+      ]);
+      return {
+        subscription: existingSub,
+        payment: existingPayment,
+        alreadyProcessed: true,
+        extendedFrom: null,
+      };
+    }
+
+    const payment = await tx.subscriptionPayment.findUnique({
+      where: { id: paymentId },
+      include: { plan: true },
+    });
+    if (!payment) throw notFound("Payment not found", "PAYMENT_NOT_FOUND");
+
+    if (eventId) {
+      await tx.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: { processedEventIds: { push: eventId } },
+      });
+    }
+
+    const snapshot = payment.planSnapshot ?? null;
+    const planName =
+      snapshot?.name ?? payment.plan?.name ?? "Platform subscription";
+    const durationDays = resolvePlanDurationDays(
+      snapshot
+        ? {
+            durationDays: snapshot.durationDays,
+            durationMonths: snapshot.durationMonths,
+          }
+        : payment.plan,
+    );
+    const currency = payment.currency || CURRENCY;
+    const amountPaise = Math.round(payment.amount);
+
+    const existing = await tx.gymSubscription.findUnique({ where: { gymId } });
+    const entitlementEnd = currentEntitlementEnd(existing);
+    const extendsExisting =
+      existing?.status === "ACTIVE" &&
+      entitlementEnd &&
+      entitlementEnd.getTime() > now.getTime();
+
+    const baseDate =
+      entitlementEnd && entitlementEnd.getTime() > now.getTime() ? entitlementEnd : now;
+    const newPeriodEnd = addDays(baseDate, durationDays);
+    const periodStart = extendsExisting
+      ? existing.currentPeriodStart ?? now
+      : now;
+
+    const sub = await tx.gymSubscription.upsert({
+      where: { gymId },
+      update: {
+        planId: payment.planId ?? existing?.planId ?? null,
+        planNameSnapshot: planName,
+        pricePaise: amountPaise,
+        currency,
+        status: "ACTIVE",
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: newPeriodEnd,
+        cancelAtPeriodEnd: false,
+        cancelledAt: null,
+        paymentProvider: PROVIDER,
+        updatedAt: now,
+      },
+      create: {
+        gymId,
+        planId: payment.planId ?? null,
+        planNameSnapshot: planName,
+        pricePaise: amountPaise,
+        currency,
+        status: "ACTIVE",
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: newPeriodEnd,
+        cancelAtPeriodEnd: false,
+        paymentProvider: PROVIDER,
+      },
+      include: { plan: true },
+    });
+
+    await tx.subscriptionPayment.update({
+      where: { id: payment.id },
+      data: { subscriptionId: sub.id },
+    });
+
+    await auditLog(tx, {
+      action: extendsExisting ? "SUBSCRIPTION_EXTENDED" : "SUBSCRIPTION_ACTIVATED",
+      gymId,
+      planId: payment.planId ?? null,
+      subscriptionId: sub.id,
+      actor: null,
+      reason:
+        source === "webhook"
+          ? "Paid subscription activated via webhook"
+          : "Paid subscription activated",
+      details: {
+        orderId: payment.orderId,
+        paymentId: providerPaymentId,
+        plan: planName,
+        amount: amountPaise,
+        currency,
+        durationDays,
+        source,
+        amountBreakdown: payment.amountBreakdown ?? null,
+      },
+      oldValues: existing
+        ? {
+            status: existing.status,
+            planId: existing.planId ?? null,
+            currentPeriodEnd: existing.currentPeriodEnd ?? null,
+          }
+        : null,
+      newValues: {
+        status: sub.status,
+        planId: sub.planId ?? null,
+        currentPeriodStart: sub.currentPeriodStart,
+        currentPeriodEnd: sub.currentPeriodEnd,
+      },
+    });
+
+    return {
+      subscription: sub,
+      payment: { ...payment, subscriptionId: sub.id, status: "SUCCESS" },
+      alreadyProcessed: false,
+      extendedFrom: extendsExisting ? entitlementEnd : null,
+      newPeriodEnd,
+      durationDays,
+    };
+  });
+
+  return outcome;
+}
+
+/** Mark an order failed (webhook `payment.failed`). Idempotent. */
+export async function markPaymentFailed({ orderId, reason, eventId = null, now = new Date() }) {
+  const payment = await prisma.subscriptionPayment.findFirst({
+    where: { orderId },
+    select: { id: true, gymId: true, status: true, processedEventIds: true },
+  });
+  if (!payment) return { updated: false, reason: "PAYMENT_NOT_FOUND" };
+  if (payment.status === "SUCCESS" || payment.status === "REFUNDED") {
+    return { updated: false, reason: `ALREADY_${payment.status}` };
+  }
+
+  await prisma.subscriptionPayment.update({
+    where: { id: payment.id },
+    data: {
+      status: "FAILED",
+      failureReason: reason ? String(reason).slice(0, 1000) : "Payment failed at provider",
+      updatedAt: now,
+      ...(eventId ? { processedEventIds: { push: eventId } } : {}),
+    },
+  });
+
+  await auditLog(prisma, {
+    action: "PAYMENT_FAILED",
+    gymId: payment.gymId,
+    actor: null,
+    reason: "Provider reported a failed payment",
+    details: { orderId, eventId, failureReason: reason ?? null },
+    newValues: { status: "FAILED" },
+  });
+
+  return { updated: true };
 }

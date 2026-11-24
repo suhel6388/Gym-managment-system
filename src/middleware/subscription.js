@@ -10,7 +10,10 @@
 // middleware (those routes must not apply it).
 
 import { prisma } from "../db.js";
-import { computeEntitlement } from "../services/subscription.service.js";
+import {
+  computeEntitlement,
+  getGracePeriodDays,
+} from "../services/subscription.service.js";
 import { paymentRequired } from "../utils/http-error.js";
 
 /**
@@ -47,7 +50,9 @@ export function requireActiveSubscription({ exempt = [] } = {}) {
         },
       });
 
-      const entitlement = computeEntitlement(sub, new Date());
+      const entitlement = computeEntitlement(sub, new Date(), {
+        gracePeriodDays: await getGracePeriodDays(),
+      });
       req.subscription = entitlement.subscription ?? null;
       req.entitlement = entitlement;
 
@@ -58,6 +63,7 @@ export function requireActiveSubscription({ exempt = [] } = {}) {
           reason: entitlement.reason,
           expiresAt: entitlement.expiresAt,
           remainingDays: entitlement.remainingDays,
+          graceEndsAt: entitlement.graceEndsAt ?? null,
           message: subscriptionExpiredMessage(entitlement.reason),
         });
       }

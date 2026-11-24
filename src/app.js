@@ -24,6 +24,7 @@ import adminSubscriptionRoutes from "./routes/admin.subscription.route.js";
 import superAdminRoutes from "./routes/super-admin.route.js";
 import scheduleCallRoutes from "./routes/scheduleCall.route.js"
 import subscriptionWebhookRoutes from "./routes/subscription.webhook.route.js";
+import platformRoutes from "./routes/platform.routes.js";
 import aiAssistantRoutes from "./routes/ai-assistant.route.js";
 import { startExpiryJob } from "./jobs/subscription-expiry.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
@@ -130,6 +131,12 @@ app.use("/api/v1/ai-assistant", aiAssistantRoutes);
 // SaaS subscription & billing routes.
 app.use("/api/v1/subscription", subscriptionRoutes);
 app.use("/api/v1/admin/subscription", adminSubscriptionRoutes);
+
+// Platform subscription billing (Razorpay Orders + Checkout + Webhooks).
+// Both prefixes resolve to the same handlers; `/api/v1/platform` matches the
+// rest of this API, `/api/platform` matches the platform-billing contract.
+app.use("/api/v1/platform", platformRoutes);
+app.use("/api/platform", platformRoutes);
 
 
 

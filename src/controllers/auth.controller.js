@@ -3,7 +3,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.ts";
 import { prisma } from "../db.js";
 import { sendOTPEmail, sendPasswordResetOtpEmail } from "../lib/email.ts";
-import { startTrial } from "../services/subscription.service.js";
+import { startTrial, getSubscriptionSummary } from "../services/subscription.service.js";
 import { getClientOrigins, resolveClientOriginFromRequest } from "../lib/origins.ts";
 
 const phoneSchema = z
@@ -143,7 +143,7 @@ export function forwardCookies(authResponse, res) {
   }
 }
 
-async function forwardAuthResponse(authResponse, res) {
+async function forwardAuthResponse(authResponse, res, { withSubscription = false } = {}) {
   forwardCookies(authResponse, res);
   let body = null;
   try {
@@ -159,6 +159,28 @@ async function forwardAuthResponse(authResponse, res) {
         const raw = decodeURIComponent(match[1]);
         const cleanToken = raw.split(".")[0];
         body.token = cleanToken;
+      }
+    }
+
+    // Owner-facing plan/expiry snapshot. The dashboard guard needs it to send
+    // an expired gym to /upgrade immediately after login; the backend still
+    // enforces entitlement on every request.
+    if (withSubscription) {
+      try {
+        const email = body.user?.email;
+        const dbUser = email
+          ? await prisma.user.findUnique({
+              where: { email },
+              select: { gymId: true, role: true },
+            })
+          : null;
+        body.subscription =
+          dbUser?.gymId && dbUser.role !== "SUPER_ADMIN"
+            ? await getSubscriptionSummary(dbUser.gymId)
+            : null;
+      } catch {
+        // Never fail a successful login because the summary could not load.
+        body.subscription = null;
       }
     }
   }
@@ -438,7 +460,10 @@ export async function login(req, res, next) {
         emailSent,
       });
     }
-    return forwardAuthResponse(response, res);
+    // Include the owner-facing billing snapshot so the client can route an
+    // expired gym straight to /upgrade. Entitlement is still enforced by the
+    // backend on every subsequent request.
+    return forwardAuthResponse(response, res, { withSubscription: true });
   } catch (err) {
     if (err?.statusCode ?? err?.status) {
       return res.status(authErrorStatus(err)).json({ error: authErrorMessage(err) });
@@ -659,11 +684,24 @@ export async function me(req, res, next) {
       },
     });
     const sessionToken = sessionData?.token ?? (session?.session?.token ?? null);
+
+    // Billing snapshot for gym owners. Platform admins are not billed, and a
+    // failure to read it must never break session restore.
+    let subscription = null;
+    if (user?.gymId && user.role !== "SUPER_ADMIN") {
+      try {
+        subscription = await getSubscriptionSummary(user.gymId);
+      } catch {
+        subscription = null;
+      }
+    }
+
     return res.json({
       data: {
         user: user ?? session?.user,
         session: sessionData ?? session?.session ?? null,
         token: sessionToken,
+        subscription,
       },
     });
   } catch (err) {

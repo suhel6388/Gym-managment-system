@@ -54,6 +54,19 @@ export async function createOrder({ amount, currency = "INR", receipt, notes = {
 }
 
 /**
+ * Constant-time comparison of two hex signatures. Comparing with `===` leaks
+ * timing information; `timingSafeEqual` requires equal lengths.
+ */
+function signaturesMatch(expected, provided) {
+  const expectedBuffer = Buffer.from(String(expected ?? ""), "utf8");
+  const providedBuffer = Buffer.from(String(provided ?? ""), "utf8");
+  if (expectedBuffer.length !== providedBuffer.length || expectedBuffer.length === 0) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+/**
  * Verify a Razorpay payment signature.
  * Returns true when the signature matches.
  */
@@ -61,9 +74,10 @@ export function verifyPaymentSignature({ orderId, paymentId, signature }) {
   if (!keySecret) {
     throw new Error("Razorpay secret is not configured");
   }
+  if (!orderId || !paymentId || !signature) return false;
   const body = `${orderId}|${paymentId}`;
   const expected = crypto.createHmac("sha256", keySecret).update(body).digest("hex");
-  return expected === signature;
+  return signaturesMatch(expected, signature);
 }
 
 /**
@@ -74,8 +88,9 @@ export function verifyWebhookSignature(rawBody, signature) {
   if (!webhookSecret) {
     throw new Error("Razorpay webhook secret is not configured");
   }
+  if (!rawBody || !signature) return false;
   const expected = crypto.createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
-  return expected === signature;
+  return signaturesMatch(expected, signature);
 }
 
 /** Fetch a payment from Razorpay (server-side verification). */

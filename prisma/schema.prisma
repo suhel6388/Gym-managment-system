@@ -357,16 +357,30 @@ enum TrialRecordType {
 model SubscriptionPlan {
   id             String   @id @default(cuid())
   code           String   @unique
+  /// URL-friendly identifier used by the platform billing API.
+  slug           String?  @unique
   name           String
   description    String?  @db.Text
+  /// Base price in integer paise, BEFORE discount and GST.
   pricePaise     Int
   currency       String   @default("INR")
+  /// Legacy duration in whole months. Kept for older plans/endpoints.
   durationMonths Int
+  /// Canonical platform duration. When set it wins over durationMonths.
+  durationDays   Int?
+  /// GST percentage applied to the discounted taxable amount (e.g. 18).
+  gstPercent     Int      @default(0)
+  /// Super-admin controlled flat discount in paise, applied before GST.
+  discountPaise  Int      @default(0)
   isActive       Boolean  @default(true)
   displayOrder   Int      @default(0)
   features       String[]
   maxStaff       Int?
   maxBranches    Int?
+  /// Soft delete: archived plans keep their payment/subscription history.
+  deletedAt      DateTime?
+  createdBy      String?
+  updatedBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -374,6 +388,7 @@ model SubscriptionPlan {
   payments      SubscriptionPayment[]
 
   @@index([isActive, displayOrder])
+  @@index([deletedAt])
 }
 
 /// One SaaS subscription row per gym. The unique gymId constraint is what
@@ -429,11 +444,23 @@ model SubscriptionPayment {
   signature      String?
   failureReason  String?                   @db.Text
   verifiedAt     DateTime?
+  /// Immutable price snapshot: { base, discount, couponDiscount, couponCode,
+  /// taxableAmount, gst, gstPercent, total } — all integer paise.
+  amountBreakdown Json?
+  /// Immutable plan terms at order time (name, durationDays, features...).
+  planSnapshot    Json?
+  couponCode      String?
+  /// Razorpay webhook event ids already applied to this payment. The webhook
+  /// table is the primary dedupe gate; this is a per-payment audit trail.
+  processedEventIds String[]             @default([])
+  /// SUBSCRIPTION | MANUAL_GRANT (manual grants are audited but carry no money)
+  purpose        String                    @default("SUBSCRIPTION")
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
 
   @@index([gymId, createdAt])
   @@index([subscriptionId, status])
+  @@index([status, createdAt])
 }
 
 /// Duplicate-webhook protection. The provider event id is the primary key:
@@ -475,6 +502,9 @@ model SubscriptionSetting {
   trialRequiresPaymentMethod Boolean  @default(false)
   cancellationPolicy       String    @default("END_OF_PERIOD") // END_OF_PERIOD | IMMEDIATE
   reminderDaysBefore       Int       @default(3)
+  /// Days after expiry during which the gym keeps access while still being
+  /// prompted to renew. Configurable by the platform owner.
+  gracePeriodDays          Int       @default(3)
   updatedById              String?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
@@ -493,11 +523,16 @@ model SubscriptionAuditLog {
   actorEmail     String?
   actorRole      String?
   reason         String?         @db.Text
+  /// Legacy free-form detail blob, kept for existing admin screens.
   details        Json?
+  /// Structured change tracking for price/plan/entitlement mutations.
+  oldValues      Json?
+  newValues      Json?
   createdAt      DateTime        @default(now())
 
   @@index([gymId, createdAt])
   @@index([action, createdAt])
+  @@index([planId, createdAt])
 }
 
 model ScheduleCall {

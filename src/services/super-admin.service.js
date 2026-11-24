@@ -646,7 +646,13 @@ export async function assignPlan(actor, gymId, { planId, expiresAt, reason }, no
   if (!plan) throw notFound("Plan not found", "PLAN_NOT_FOUND");
 
   const explicitExpiry = parseFutureDate(expiresAt);
-  const periodEnd = explicitExpiry ?? addMonthsClamped(now, plan.durationMonths);
+  // durationDays is canonical for platform plans; durationMonths is the legacy
+  // fallback for plans created before day-based billing existed.
+  const periodEnd =
+    explicitExpiry ??
+    (plan.durationDays > 0
+      ? addDays(now, plan.durationDays)
+      : addMonthsClamped(now, plan.durationMonths));
 
   const result = await prisma.$transaction(async (tx) => {
     const existing = await tx.gymSubscription.findUnique({ where: { gymId } });
