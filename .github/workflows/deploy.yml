@@ -37,7 +37,6 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd ~/Gym-managment-system
-            pm2 stop all
             git pull origin main
-            npm install
-            pm2 restart all
+            npm ci --omit=dev
+            pm2 reload all

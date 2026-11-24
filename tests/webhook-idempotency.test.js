@@ -161,3 +161,4 @@ test("webhook event validates event structure before database operations", () =>
     { valid: true, eventId: "evt_123", eventType: "payment.captured" }
   );
 });
+
