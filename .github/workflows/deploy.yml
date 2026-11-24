@@ -38,5 +38,7 @@ jobs:
           script: |
             cd ~/Gym-managment-system
             git pull origin main
-            npm ci --omit=dev
-            pm2 reload all
+            npm install
+            node node_modules/prisma/build/index.js generate
+            pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            pm2 save
