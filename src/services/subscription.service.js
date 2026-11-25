@@ -1493,9 +1493,14 @@ export async function getSubscriptionSummary(gymId, now = new Date()) {
     };
   }
 
-  const [sub, gracePeriodDays] = await Promise.all([
+  const [sub, gracePeriodDays, latestPayment] = await Promise.all([
     prisma.gymSubscription.findUnique({ where: { gymId }, include: { plan: true } }),
     getGracePeriodDays(),
+    prisma.subscriptionPayment.findFirst({
+      where: { gymId, status: "SUCCESS" },
+      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+      select: { verifiedAt: true, createdAt: true },
+    }),
   ]);
 
   const entitlement = computeEntitlement(sub, now, { gracePeriodDays });
@@ -1504,11 +1509,12 @@ export async function getSubscriptionSummary(gymId, now = new Date()) {
     ? sub?.trialStartsAt ?? null
     : sub?.currentPeriodStart ?? sub?.trialStartsAt ?? null;
   const expiresAt = entitlement.expiresAt ?? null;
+  const lastPurchasedAt = latestPayment?.verifiedAt ?? latestPayment?.createdAt ?? null;
 
   let totalDays = 0;
   if (startsAt && expiresAt) {
     const diffMs = new Date(expiresAt).getTime() - new Date(startsAt).getTime();
-    totalDays = Math.max(1, Math.round(diffMs / MS_PER_DAY));
+    totalDays = Math.max(1, Math.round(diffMs / DAY_MS));
   } else if (sub?.plan) {
     totalDays = resolvePlanDurationDays(sub.plan);
   }
@@ -1535,6 +1541,7 @@ export async function getSubscriptionSummary(gymId, now = new Date()) {
     reason: entitlement.reason,
     graceEndsAt: entitlement.graceEndsAt ?? null,
     cancelAtPeriodEnd: Boolean(sub?.cancelAtPeriodEnd),
+    lastPurchasedAt,
   };
 }
 

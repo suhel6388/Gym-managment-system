@@ -7,7 +7,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "test": "tsx --test \"tests/**/*.test.js\"",
+    "test": "tsx --env-file=.env --test \"tests/**/*.test.js\"",
     "dev": "nodemon --exec tsx server.js",
     "start": "node server.js",
     "start:pm2": "node server.js",
