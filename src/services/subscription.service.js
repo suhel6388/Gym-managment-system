@@ -1394,7 +1394,11 @@ export async function reconcileExpiredSubscriptions(now = new Date()) {
  */
 export function resolvePlanDurationDays(plan) {
   if (plan?.durationDays && plan.durationDays > 0) return Math.floor(plan.durationDays);
-  if (plan?.durationMonths && plan.durationMonths > 0) return Math.floor(plan.durationMonths * 30);
+  if (plan?.durationMonths && plan.durationMonths > 0) {
+    if (plan.durationMonths === 12) return 365;
+    if (plan.durationMonths % 12 === 0) return Math.floor((plan.durationMonths / 12) * 365);
+    return Math.floor(plan.durationMonths * 30);
+  }
   return 30;
 }
 
@@ -1469,13 +1473,23 @@ export function clearGracePeriodCache() {
 export async function getSubscriptionSummary(gymId, now = new Date()) {
   if (!gymId) {
     return {
+      id: null,
       status: "NONE",
       planName: null,
+      startsAt: null,
       expiresAt: null,
+      currentPeriodEnd: null,
+      trialEndsAt: null,
+      isTrial: false,
       daysLeft: 0,
+      remainingDays: 0,
+      totalDays: 0,
+      elapsedDays: 0,
+      isExpiringSoon: false,
       entitled: false,
       reason: "NO_SUBSCRIPTION",
       graceEndsAt: null,
+      cancelAtPeriodEnd: false,
     };
   }
 
@@ -1485,15 +1499,42 @@ export async function getSubscriptionSummary(gymId, now = new Date()) {
   ]);
 
   const entitlement = computeEntitlement(sub, now, { gracePeriodDays });
+  const isTrial = sub?.status === "TRIALING";
+  const startsAt = isTrial
+    ? sub?.trialStartsAt ?? null
+    : sub?.currentPeriodStart ?? sub?.trialStartsAt ?? null;
+  const expiresAt = entitlement.expiresAt ?? null;
+
+  let totalDays = 0;
+  if (startsAt && expiresAt) {
+    const diffMs = new Date(expiresAt).getTime() - new Date(startsAt).getTime();
+    totalDays = Math.max(1, Math.round(diffMs / MS_PER_DAY));
+  } else if (sub?.plan) {
+    totalDays = resolvePlanDurationDays(sub.plan);
+  }
+
+  const remainingDays = entitlement.remainingDays ?? 0;
+  const elapsedDays =
+    totalDays > 0 ? Math.min(totalDays, Math.max(0, totalDays - remainingDays)) : 0;
 
   return {
+    id: sub?.id ?? null,
     status: sub?.status ?? "NONE",
     planName: sub?.planNameSnapshot ?? sub?.plan?.name ?? null,
-    expiresAt: entitlement.expiresAt,
-    daysLeft: entitlement.remainingDays,
+    startsAt,
+    expiresAt,
+    currentPeriodEnd: sub?.currentPeriodEnd ?? null,
+    trialEndsAt: sub?.trialEndsAt ?? null,
+    isTrial,
+    daysLeft: remainingDays,
+    remainingDays,
+    totalDays,
+    elapsedDays,
+    isExpiringSoon: entitlement.entitled && remainingDays > 0 && remainingDays <= 7,
     entitled: entitlement.entitled,
     reason: entitlement.reason,
     graceEndsAt: entitlement.graceEndsAt ?? null,
+    cancelAtPeriodEnd: Boolean(sub?.cancelAtPeriodEnd),
   };
 }
 
